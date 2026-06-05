@@ -1,0 +1,32 @@
+mugon-sdk-js:codestyle:
+  stage: codestyle
+  image: node:26-alpine
+  needs: []
+  allow_failure: true
+  cache:
+    key:
+      files:
+        - libraries/mugon-sdk-js/package-lock.json
+    paths:
+      - libraries/mugon-sdk-js/node_modules/
+  script:
+    - cd libraries/mugon-sdk-js
+    - npm ci
+    - npm run format:check
+
+mugon-sdk-js:build:
+  stage: build
+  image: node:26-alpine
+  cache:
+    key:
+      files:
+        - libraries/mugon-sdk-js/package-lock.json
+    paths:
+      - libraries/mugon-sdk-js/node_modules/
+  script:
+    - cd libraries/mugon-sdk-js
+    - npm ci
+    - npm run build
+  artifacts:
+    paths:
+      - libraries/mugon-sdk-js/dist/
