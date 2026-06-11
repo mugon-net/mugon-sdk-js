@@ -1,4 +1,14 @@
+import { version } from "./version";
+
+export type MessageToParentFrame =
+  | { type: "rdy"; version: number }
+  | { type: "dc" };
+
+export type MessageToGameFrame = { type: "start"; version: number };
+
 export function setupParentFrameCommunication() {
+  const initMsg: MessageToParentFrame = { type: "rdy", version: version };
+  window.parent.postMessage({ initMsg }, { targetOrigin: "*" });
   console.log("TODO");
 }
 
