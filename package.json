@@ -18,6 +18,7 @@
   "exports": {
     ".": "./dist/index.js"
   },
+  "types": "./dist/global.d.ts",
   "files": [
     "dist"
   ]
