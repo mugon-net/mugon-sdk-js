@@ -28,13 +28,19 @@ export function setupParentFrameCommunication(
     onDisconnectMsg: onDisconnectMsg,
     onDataMsg: onDataMsg,
   };
-  window.onmessage = handleParentFrameMessage;
-
-  window.parent.postMessage(
-    { type: "rdy", protocol: PROTOCOL },
-    { targetOrigin: "*" },
-  );
-  console.log("Gameframe ready");
+  window.addEventListener("message", (e) => {
+    if (e.source !== window.parent) return;
+    // Additionally check parent origin? if (e.origin !== PARENT_ORIGIN) return;
+    if (e.data?.type === "init" && e.ports[0]) {
+      const port = e.ports[0];
+      port.onmessage = handleParentFrameMessage;
+      window.parent.postMessage(
+        { type: "rdy", protocol: PROTOCOL },
+        { targetOrigin: "*" },
+      );
+      console.log("Gameframe ready");
+    }
+  });
 }
 
 export function startCanvasManager() {
