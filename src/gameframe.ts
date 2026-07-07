@@ -1,4 +1,6 @@
 import {
+  FromGameframeDataMessage,
+  FromGameframeDroppedMessage,
   PROTOCOL,
   ToGameframeDataMessage,
   ToGameframeMessage,
@@ -57,9 +59,19 @@ export function startCanvasManager() {
   observer.observe(canvas);
 }
 
-export function disconnect(id: string) {}
+export function disconnect(id: string) {
+  const msg: FromGameframeDroppedMessage = { type: "drp", clientid: id };
+  port?.postMessage(msg);
+}
 
-export function sendDataMessage(id: string, data: Uint8Array) {}
+export function sendDataMessage(id: string, data: Uint8Array) {
+  const msg: FromGameframeDataMessage = {
+    type: "msg",
+    toclientid: id,
+    data,
+  };
+  port?.postMessage(msg, [data.buffer]);
+}
 
 export function getSettingValue(
   key: "mugon.networkmode" | "mugon.serverid" | "mugon.clientid" | string,
@@ -98,8 +110,6 @@ function handleParentFrameMessage(event: MessageEvent) {
   }
 }
 
-// For cases where the calling party can't import this library
-// e.g. when calling functions from wasm
 export function injectClientApiIntoWindowObject() {
   window.setupParentFrameCommunication = setupParentFrameCommunication;
   window.startCanvasManager = startCanvasManager;
