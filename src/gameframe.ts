@@ -16,6 +16,8 @@ let callbacks:
       onDataMsg: (msg: ToGameframeDataMessage) => void;
     } = undefined;
 
+let port: undefined | MessagePort = undefined;
+
 export function setupParentFrameCommunication(
   onReadyMsg: (msg: ToGrameframeReadyMessage) => void,
   onConnectMsg: (msg: ToGrameframeConnectedMessage) => void,
@@ -30,15 +32,11 @@ export function setupParentFrameCommunication(
   };
   window.addEventListener("message", (e) => {
     if (e.source !== window.parent) return;
-    // Additionally check parent origin? if (e.origin !== PARENT_ORIGIN) return;
     if (e.data?.type === "init" && e.ports[0]) {
-      const port = e.ports[0];
+      port = e.ports[0];
       port.onmessage = handleParentFrameMessage;
-      window.parent.postMessage(
-        { type: "rdy", protocol: PROTOCOL },
-        { targetOrigin: "*" },
-      );
-      console.log("Gameframe ready");
+      port.postMessage({ type: "rdy", protocol: PROTOCOL });
+      console.log("Gameframe initialized.");
     }
   });
 }
@@ -67,6 +65,7 @@ export function getSettingValue(
 
 function handleParentFrameMessage(event: MessageEvent) {
   // if (event.origin !== "http://localhost:3000") return; // TODO
+  console.log("From parentframe: ", event);
   if (!("type" in event.data)) return;
   const msg = event.data as ToGameframeMessage;
 
