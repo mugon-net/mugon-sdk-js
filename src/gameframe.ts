@@ -2,6 +2,7 @@ import {
   PROTOCOL,
   ToGameframeDataMessage,
   ToGameframeMessage,
+  ToGameframeSettingsMessage,
   ToGrameframeConnectedMessage,
   ToGrameframeDisconnectedMessage,
   ToGrameframeReadyMessage,
@@ -10,25 +11,29 @@ import {
 let callbacks:
   | undefined
   | {
-      onReadyMsg: (msg: ToGrameframeReadyMessage) => void;
-      onConnectMsg: (msg: ToGrameframeConnectedMessage) => void;
-      onDisconnectMsg: (msg: ToGrameframeDisconnectedMessage) => void;
-      onDataMsg: (msg: ToGameframeDataMessage) => void;
+      onReadyMsg?: (msg: ToGrameframeReadyMessage) => void;
+      onConnectMsg?: (msg: ToGrameframeConnectedMessage) => void;
+      onDisconnectMsg?: (msg: ToGrameframeDisconnectedMessage) => void;
+      onDataMsg?: (msg: ToGameframeDataMessage) => void;
+      onSettingsMsg?: (msg: ToGameframeSettingsMessage) => void;
     } = undefined;
 
 let port: undefined | MessagePort = undefined;
+let settings: undefined | Record<string, string> = undefined;
 
 export function setupParentFrameCommunication(
-  onReadyMsg: (msg: ToGrameframeReadyMessage) => void,
-  onConnectMsg: (msg: ToGrameframeConnectedMessage) => void,
-  onDisconnectMsg: (msg: ToGrameframeDisconnectedMessage) => void,
-  onDataMsg: (msg: ToGameframeDataMessage) => void,
+  onReadyMsg?: (msg: ToGrameframeReadyMessage) => void,
+  onConnectMsg?: (msg: ToGrameframeConnectedMessage) => void,
+  onDisconnectMsg?: (msg: ToGrameframeDisconnectedMessage) => void,
+  onDataMsg?: (msg: ToGameframeDataMessage) => void,
+  onSettingsMsg?: (msg: ToGameframeSettingsMessage) => void,
 ) {
   callbacks = {
     onReadyMsg: onReadyMsg,
     onConnectMsg: onConnectMsg,
     onDisconnectMsg: onDisconnectMsg,
     onDataMsg: onDataMsg,
+    onSettingsMsg: onSettingsMsg,
   };
   window.addEventListener("message", (e) => {
     if (e.source !== window.parent) return;
@@ -57,30 +62,38 @@ export function disconnect(id: string) {}
 export function sendDataMessage(id: string, data: Uint8Array) {}
 
 export function getSettingValue(
-  id: "mugon.networkmode" | "mugon.serverid" | "mugon.clientid" | string,
-): string {
-  // todo request from parent frame, wait for response, return response
-  return "TODO";
+  key: "mugon.networkmode" | "mugon.serverid" | "mugon.clientid" | string,
+): string | undefined {
+  if (!settings) {
+    console.warn(
+      "getSettingValue called before settings were received from the parent frame",
+    );
+    return undefined;
+  }
+  return settings[key];
 }
 
 function handleParentFrameMessage(event: MessageEvent) {
   // if (event.origin !== "http://localhost:3000") return; // TODO
-  console.log("From parentframe: ", event);
   if (!("type" in event.data)) return;
   const msg = event.data as ToGameframeMessage;
 
   switch (msg.type) {
     case "rdy":
-      callbacks?.onReadyMsg(msg);
+      callbacks?.onReadyMsg?.(msg);
       break;
     case "con":
-      callbacks?.onConnectMsg(msg);
+      callbacks?.onConnectMsg?.(msg);
       break;
     case "dc":
-      callbacks?.onDisconnectMsg(msg);
+      callbacks?.onDisconnectMsg?.(msg);
       break;
     case "msg":
-      callbacks?.onDataMsg(msg);
+      callbacks?.onDataMsg?.(msg);
+      break;
+    case "set":
+      settings = msg.settings;
+      callbacks?.onSettingsMsg?.(msg);
       break;
   }
 }

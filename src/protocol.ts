@@ -8,11 +8,16 @@ export type ToGameframeDataMessage = {
   fromclientid: string;
   data: Uint8Array;
 };
+export type ToGameframeSettingsMessage = {
+  type: "set";
+  settings: Record<string, string>;
+};
 export type ToGameframeMessage =
   | ToGrameframeReadyMessage
   | ToGrameframeConnectedMessage
   | ToGrameframeDisconnectedMessage
-  | ToGameframeDataMessage;
+  | ToGameframeDataMessage
+  | ToGameframeSettingsMessage;
 
 export type FromGameframeReadyMessage = { type: "rdy"; protocol: string };
 export type FromGameframeDataMessage = {
@@ -25,4 +30,3 @@ export type FromGameframeMessage =
   | FromGameframeReadyMessage
   | FromGameframeDataMessage
   | FromGameframeDroppedMessage;
-//  | { type: "reqset"; name: string; page?: number; pageSize?: number };
