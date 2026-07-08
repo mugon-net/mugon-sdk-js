@@ -1,4 +1,5 @@
 import {
+  Channel,
   FromGameframeDataMessage,
   FromGameframeDroppedMessage,
   PROTOCOL,
@@ -64,10 +65,15 @@ export function disconnect(id: string) {
   port?.postMessage(msg);
 }
 
-export function sendDataMessage(id: string, data: Uint8Array) {
+export function sendDataMessage(
+  id: string,
+  data: Uint8Array,
+  channel: Channel = Channel.ReliableOrdered,
+) {
   const msg: FromGameframeDataMessage = {
     type: "msg",
     toclientid: id,
+    channel,
     data,
   };
   port?.postMessage(msg, [data.buffer]);
