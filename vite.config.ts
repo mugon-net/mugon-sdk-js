@@ -3,12 +3,16 @@ import { defineConfig } from "vite";
 import dts from "vite-plugin-dts";
 
 export default defineConfig({
-  plugins: [dts({ rollupTypes: true })],
+  plugins: [dts()],
   build: {
     lib: {
-      entry: resolve(__dirname, "src/index.ts"),
+      entry: {
+        index: resolve(__dirname, "src/index.ts"),
+        protocol: resolve(__dirname, "src/protocol.ts"),
+        gameframe: resolve(__dirname, "src/gameframe.ts"),
+        parentframe: resolve(__dirname, "src/parentframe.ts"),
+      },
       formats: ["es"],
-      fileName: "index",
     },
   },
 });

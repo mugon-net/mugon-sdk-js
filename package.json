@@ -20,6 +20,18 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js"
+    },
+    "./gameframe": {
+      "types": "./dist/gameframe.d.ts",
+      "import": "./dist/gameframe.js"
+    },
+    "./parentframe": {
+      "types": "./dist/parentframe.d.ts",
+      "import": "./dist/parentframe.js"
     }
   },
   "types": "./dist/index.d.ts",
