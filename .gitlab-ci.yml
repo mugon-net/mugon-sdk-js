@@ -1,8 +1,14 @@
+.mugon-sdk-js-changes:
+  rules:
+    - changes:
+        - libraries/mugon-sdk-js/**/*
+
 mugon-sdk-js:codestyle:
   stage: codestyle
   image: node:26-alpine
   needs: []
   allow_failure: true
+  rules: !reference [.mugon-sdk-js-changes, rules]
   cache:
     key:
       files:
@@ -17,6 +23,7 @@ mugon-sdk-js:codestyle:
 mugon-sdk-js:build:
   stage: build
   image: node:26-alpine
+  rules: !reference [.mugon-sdk-js-changes, rules]
   cache:
     key:
       files:
