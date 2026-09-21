@@ -117,16 +117,21 @@ export class Parentframe {
         const channel = new MessageChannel();
         this.port = channel.port1;
         this.port.onmessage = (event) => {
-          if (!acked && (event.data as FromGameframeMessage | undefined)?.type === "rdy") {
+          if (
+            !acked &&
+            (event.data as FromGameframeMessage | undefined)?.type === "rdy"
+          ) {
             acked = true;
             if (intervalId !== undefined) clearInterval(intervalId);
             resolve();
           }
           this.handleChildFrameMessage(event);
         };
-        this.options.gameFrame.contentWindow?.postMessage({ type: "init" }, "*", [
-          channel.port2,
-        ]);
+        this.options.gameFrame.contentWindow?.postMessage(
+          { type: "init" },
+          "*",
+          [channel.port2],
+        );
       };
 
       trySend();
