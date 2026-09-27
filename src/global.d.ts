@@ -2,8 +2,10 @@
 import type {
   disconnect,
   getSettingValue,
+  requestFullscreen,
   sendDataMessage,
   setupParentFrameCommunication,
+  showInvite,
   startCanvasManager,
 } from "./gameframe";
 
@@ -13,6 +15,8 @@ declare global {
     startCanvasManager?: typeof startCanvasManager;
     disconnect?: typeof disconnect;
     sendDataMessage?: typeof sendDataMessage;
+    requestFullscreen?: typeof requestFullscreen;
+    showInvite?: typeof showInvite;
     getSettingValue?: typeof getSettingValue;
   }
 }

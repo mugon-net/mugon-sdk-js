@@ -2,6 +2,7 @@ import {
   Channel,
   FromGameframeDataMessage,
   FromGameframeDroppedMessage,
+  FromGameframeShowInviteMessage,
   PROTOCOL,
   ToGameframeDataMessage,
   ToGameframeMessage,
@@ -79,6 +80,24 @@ export function sendDataMessage(
   port?.postMessage(msg, [data.buffer]);
 }
 
+// Fullscreens the gameframe's own document rather than relaying to the parent:
+// postMessage/MessagePort don't carry a click's transient activation across
+// frames, so a parent-side requestFullscreen() call would be rejected. This
+// still puts the host page into fullscreen too, since the iframe carries
+// `allow="fullscreen"` and the fullscreen state chains up to it.
+export function requestFullscreen() {
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+  } else {
+    document.documentElement.requestFullscreen();
+  }
+}
+
+export function showInvite() {
+  const msg: FromGameframeShowInviteMessage = { type: "showinvite" };
+  port?.postMessage(msg);
+}
+
 export function getSettingValue(
   key: "mugon.networkmode" | "mugon.serverid" | "mugon.clientid" | string,
 ): string | undefined {
@@ -121,5 +140,7 @@ export function injectClientApiIntoWindowObject() {
   window.startCanvasManager = startCanvasManager;
   window.disconnect = disconnect;
   window.sendDataMessage = sendDataMessage;
+  window.requestFullscreen = requestFullscreen;
+  window.showInvite = showInvite;
   window.getSettingValue = getSettingValue;
 }

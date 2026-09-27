@@ -59,6 +59,8 @@ export interface ParentframeOptions {
   // Called once the gameframe acknowledges the handshake with a matching
   // protocol version.
   onHandshakeComplete?: () => void;
+  // Called when the game asks the host page to show its join QR code / invite link.
+  onShowInviteRequest?: () => void;
 }
 
 export interface ParentframeConnection {
@@ -207,6 +209,9 @@ export class Parentframe {
         break;
       case "drp":
         this.transport.drop(msg.clientid);
+        break;
+      case "showinvite":
+        this.options.onShowInviteRequest?.();
         break;
     }
   }

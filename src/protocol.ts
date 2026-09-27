@@ -44,7 +44,10 @@ export type FromGameframeDataMessage = {
   data: Uint8Array;
 };
 export type FromGameframeDroppedMessage = { type: "drp"; clientid: string };
+// Asks the host page to show its join QR code / invite link.
+export type FromGameframeShowInviteMessage = { type: "showinvite" };
 export type FromGameframeMessage =
   | FromGameframeReadyMessage
   | FromGameframeDataMessage
-  | FromGameframeDroppedMessage;
+  | FromGameframeDroppedMessage
+  | FromGameframeShowInviteMessage;
