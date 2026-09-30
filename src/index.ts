@@ -1,2 +1,7 @@
-export * from "./gameframe";
-export * from "./protocol";
+import { start } from "./gameframe";
+
+export type { MugonContext, MugonEvents, MugonMessage } from "./gameframe";
+export { Channel } from "./protocol";
+export type { NetworkMode } from "./protocol";
+
+export const Mugon = { start };

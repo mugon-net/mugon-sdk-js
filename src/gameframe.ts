@@ -1,146 +1,291 @@
 import {
   Channel,
-  FromGameframeDataMessage,
-  FromGameframeDroppedMessage,
-  FromGameframeShowInviteMessage,
-  PROTOCOL,
-  ToGameframeDataMessage,
+  FromGameframeMessage,
+  FromGameframeWindowMessage,
+  NetworkMode,
+  ToGameframeInitMessage,
   ToGameframeMessage,
-  ToGameframeSettingsMessage,
-  ToGrameframeConnectedMessage,
-  ToGrameframeDisconnectedMessage,
-  ToGrameframeReadyMessage,
+  ToGameframeWindowMessage,
 } from "./protocol";
+import { createFetchClient, installFetchShim } from "./fetch-shim";
+import { version } from "./version";
 
-let callbacks:
-  | undefined
-  | {
-      onReadyMsg?: (msg: ToGrameframeReadyMessage) => void;
-      onConnectMsg?: (msg: ToGrameframeConnectedMessage) => void;
-      onDisconnectMsg?: (msg: ToGrameframeDisconnectedMessage) => void;
-      onDataMsg?: (msg: ToGameframeDataMessage) => void;
-      onSettingsMsg?: (msg: ToGameframeSettingsMessage) => void;
-    } = undefined;
-
-let port: undefined | MessagePort = undefined;
-let settings: undefined | Record<string, string> = undefined;
-
-export function setupParentFrameCommunication(
-  onReadyMsg?: (msg: ToGrameframeReadyMessage) => void,
-  onConnectMsg?: (msg: ToGrameframeConnectedMessage) => void,
-  onDisconnectMsg?: (msg: ToGrameframeDisconnectedMessage) => void,
-  onDataMsg?: (msg: ToGameframeDataMessage) => void,
-  onSettingsMsg?: (msg: ToGameframeSettingsMessage) => void,
-) {
-  callbacks = {
-    onReadyMsg: onReadyMsg,
-    onConnectMsg: onConnectMsg,
-    onDisconnectMsg: onDisconnectMsg,
-    onDataMsg: onDataMsg,
-    onSettingsMsg: onSettingsMsg,
-  };
-  window.addEventListener("message", (e) => {
-    if (e.source !== window.parent) return;
-    if (e.data?.type === "init" && e.ports[0]) {
-      port = e.ports[0];
-      port.onmessage = handleParentFrameMessage;
-      port.postMessage({ type: "rdy", protocol: PROTOCOL });
-      console.log("Gameframe initialized.");
-    }
-  });
-}
-
-export function startCanvasManager() {
-  const canvas = document.getElementById("canvas") as HTMLCanvasElement;
-  const observer = new ResizeObserver((entries) => {
-    for (const entry of entries) {
-      canvas.width = entry.contentRect.width;
-      canvas.height = entry.contentRect.height;
-    }
-  });
-  observer.observe(canvas);
-}
-
-export function disconnect(id: string) {
-  const msg: FromGameframeDroppedMessage = { type: "drp", clientid: id };
-  port?.postMessage(msg);
-}
-
-export function sendDataMessage(
-  id: string,
-  data: Uint8Array,
-  channel: Channel = Channel.ReliableOrdered,
-) {
-  const msg: FromGameframeDataMessage = {
-    type: "msg",
-    toclientid: id,
-    channel,
-    data,
-  };
-  port?.postMessage(msg, [data.buffer]);
-}
-
-// Fullscreens the gameframe's own document rather than relaying to the parent:
-// postMessage/MessagePort don't carry a click's transient activation across
-// frames, so a parent-side requestFullscreen() call would be rejected. This
-// still puts the host page into fullscreen too, since the iframe carries
-// `allow="fullscreen"` and the fullscreen state chains up to it.
-export function requestFullscreen() {
-  if (document.fullscreenElement) {
-    document.exitFullscreen();
-  } else {
-    document.documentElement.requestFullscreen();
+declare global {
+  interface Window {
+    // Set by `Mugon.start` before its callback runs.
+    readonly mugon?: MugonContext;
   }
 }
 
-export function showInvite() {
-  const msg: FromGameframeShowInviteMessage = { type: "showinvite" };
-  port?.postMessage(msg);
+export interface MugonMessage {
+  from: string;
+  channel: Channel;
+  data: Uint8Array;
 }
 
-export function getSettingValue(
-  key: "mugon.networkmode" | "mugon.serverid" | "mugon.clientid" | string,
-): string | undefined {
-  if (!settings) {
-    console.warn(
-      "getSettingValue called before settings were received from the parent frame",
+export interface MugonEvents {
+  connect: (peerId: string) => void;
+  disconnect: (peerId: string) => void;
+  message: (message: MugonMessage) => void;
+}
+
+export interface MugonContext {
+  readonly role: NetworkMode;
+  readonly ownId: string;
+  readonly serverId: string;
+  readonly settings: Readonly<Record<string, string>>;
+  // Snapshot at init; later changes arrive through `on`.
+  readonly peers: readonly string[];
+  send(peerId: string, data: Uint8Array, channel?: Channel): void;
+  drop(peerId: string): void;
+  // Events that arrive while no handler is registered for them are queued and
+  // delivered to the first handler that subscribes.
+  on<Event extends keyof MugonEvents>(
+    event: Event,
+    handler: MugonEvents[Event],
+  ): () => void;
+  showInvite(): void;
+  toggleFullscreen(): void;
+  progress: {
+    set(fraction: number, label?: string): void;
+    done(): void;
+  };
+}
+
+export interface GameframeMessageEvent {
+  source: unknown;
+  data: unknown;
+  ports: readonly MessagePort[];
+}
+
+export interface GameframeEnv {
+  parent: { postMessage(message: unknown, targetOrigin: string): void };
+  addEventListener(
+    type: "message",
+    listener: (event: GameframeMessageEvent) => void,
+  ): void;
+  toggleFullscreen(): void;
+  // Makes the context reachable by code that cannot be handed it as an
+  // argument, e.g. a wasm module started by the callback.
+  publishContext?(context: MugonContext): void;
+}
+
+const HELLO_RETRY_MS = 1000;
+
+export function createGameframeRuntime(env: GameframeEnv) {
+  let controlPort: MessagePort | undefined;
+  const fetchClient = createFetchClient();
+  let started = false;
+  let resolveContext!: (context: MugonContext) => void;
+  let rejectContext!: (error: Error) => void;
+  const contextPromise = new Promise<MugonContext>((resolve, reject) => {
+    resolveContext = resolve;
+    rejectContext = reject;
+  });
+  contextPromise.catch(() => {});
+
+  const handlers: { [Event in keyof MugonEvents]: Set<MugonEvents[Event]> } = {
+    connect: new Set(),
+    disconnect: new Set(),
+    message: new Set(),
+  };
+  const queued: {
+    [Event in keyof MugonEvents]: Parameters<MugonEvents[Event]>[0][];
+  } = {
+    connect: [],
+    disconnect: [],
+    message: [],
+  };
+
+  function emit<Event extends keyof MugonEvents>(
+    event: Event,
+    payload: Parameters<MugonEvents[Event]>[0],
+  ) {
+    if (handlers[event].size === 0) {
+      queued[event].push(payload as never);
+      return;
+    }
+    for (const handler of handlers[event]) {
+      (handler as (payload: unknown) => void)(payload);
+    }
+  }
+
+  function sendToParent(
+    message: FromGameframeMessage,
+    transfer: Transferable[] = [],
+  ) {
+    controlPort?.postMessage(message, transfer);
+  }
+
+  function handleControlMessage(event: MessageEvent) {
+    const message = event.data as ToGameframeMessage | undefined;
+    switch (message?.type) {
+      case "con":
+        emit("connect", message.clientid);
+        break;
+      case "dc":
+        emit("disconnect", message.clientid);
+        break;
+      case "msg":
+        emit("message", {
+          from: message.fromclientid,
+          channel: message.channel,
+          data: message.data,
+        });
+        break;
+    }
+  }
+
+  function buildContext(init: ToGameframeInitMessage): MugonContext {
+    return Object.freeze<MugonContext>({
+      role: init.role,
+      ownId: init.ownId,
+      serverId: init.serverId,
+      settings: Object.freeze({ ...init.settings }),
+      peers: Object.freeze([...init.initialPeers]),
+      send(peerId, data, channel = Channel.ReliableOrdered) {
+        sendToParent({ type: "msg", toclientid: peerId, channel, data }, [
+          data.buffer,
+        ]);
+      },
+      drop(peerId) {
+        sendToParent({ type: "drp", clientid: peerId });
+      },
+      on(event, handler) {
+        const set = handlers[event] as Set<typeof handler>;
+        set.add(handler);
+        for (const payload of queued[event].splice(0)) {
+          (handler as (payload: unknown) => void)(payload);
+        }
+        return () => {
+          set.delete(handler);
+        };
+      },
+      showInvite() {
+        sendToParent({ type: "showinvite" });
+      },
+      toggleFullscreen: () => env.toggleFullscreen(),
+      progress: {
+        set(fraction, label) {
+          sendToParent({ type: "progress", fraction, label });
+        },
+        done() {
+          sendToParent({ type: "done" });
+        },
+      },
+    });
+  }
+
+  function postHello() {
+    const hello: FromGameframeWindowMessage = {
+      type: "hello",
+      sdkVersion: version,
+    };
+    env.parent.postMessage(hello, "*");
+  }
+
+  const helloTimer = setInterval(postHello, HELLO_RETRY_MS);
+  const stopHelloRetries = () => clearInterval(helloTimer);
+
+  env.addEventListener("message", (event) => {
+    if (event.source !== env.parent) return;
+    const message = event.data as ToGameframeWindowMessage | undefined;
+    switch (message?.type) {
+      case "fetch-port": {
+        stopHelloRetries();
+        const port = event.ports[0];
+        if (port) fetchClient.attach(port);
+        break;
+      }
+      case "reject":
+        stopHelloRetries();
+        rejectContext(new Error(message.reason));
+        break;
+      case "init": {
+        const port = event.ports[0];
+        if (!port || controlPort) return;
+        stopHelloRetries();
+        controlPort = port;
+        port.onmessage = handleControlMessage;
+        resolveContext(buildContext(message));
+        break;
+      }
+    }
+  });
+
+  postHello();
+
+  return {
+    fetchClient,
+    async start(callback: (context: MugonContext) => void | Promise<void>) {
+      if (started) throw new Error("Mugon.start was already called");
+      started = true;
+      const context = await contextPromise;
+      env.publishContext?.(context);
+      await callback(context);
+      context.progress.done();
+    },
+  };
+}
+
+function createWindowEnv(): GameframeEnv {
+  return {
+    parent: window.parent,
+    addEventListener: (type, listener) =>
+      window.addEventListener(type, (event) =>
+        listener({
+          source: event.source,
+          data: event.data,
+          ports: event.ports,
+        }),
+      ),
+    publishContext(context) {
+      Object.defineProperty(window, "mugon", {
+        value: context,
+        enumerable: false,
+        configurable: false,
+        writable: false,
+      });
+    },
+    toggleFullscreen() {
+      // Fullscreens the gameframe's own document rather than relaying to the
+      // parent: a click's transient activation doesn't cross frames, so a
+      // parent-side requestFullscreen() would be rejected.
+      if (document.fullscreenElement) {
+        void document.exitFullscreen();
+      } else {
+        void document.documentElement.requestFullscreen();
+      }
+    },
+  };
+}
+
+let runtime: ReturnType<typeof createGameframeRuntime> | undefined;
+
+function installRuntime() {
+  if (!runtime) {
+    runtime = createGameframeRuntime(createWindowEnv());
+    installFetchShim(window, runtime.fetchClient, window.location.href);
+  }
+  return runtime;
+}
+
+const insideParentframe =
+  typeof window !== "undefined" && window.parent !== window;
+
+// Importing the SDK is what says hello to the parentframe, so that the parent
+// can start serving files before the game's own code gets to run.
+if (insideParentframe) {
+  installRuntime();
+}
+
+export function start(
+  callback: (context: MugonContext) => void | Promise<void>,
+): Promise<void> {
+  if (!insideParentframe) {
+    return Promise.reject(
+      new Error("Mugon.start must run inside a mugon parentframe iframe"),
     );
-    return undefined;
   }
-  return settings[key];
-}
-
-function handleParentFrameMessage(event: MessageEvent) {
-  // if (event.origin !== "http://localhost:3000") return; // TODO
-  if (!("type" in event.data)) return;
-  const msg = event.data as ToGameframeMessage;
-
-  switch (msg.type) {
-    case "rdy":
-      callbacks?.onReadyMsg?.(msg);
-      break;
-    case "con":
-      callbacks?.onConnectMsg?.(msg);
-      break;
-    case "dc":
-      callbacks?.onDisconnectMsg?.(msg);
-      break;
-    case "msg":
-      callbacks?.onDataMsg?.(msg);
-      break;
-    case "set":
-      settings = msg.settings;
-      callbacks?.onSettingsMsg?.(msg);
-      break;
-  }
-}
-
-export function injectClientApiIntoWindowObject() {
-  window.setupParentFrameCommunication = setupParentFrameCommunication;
-  window.startCanvasManager = startCanvasManager;
-  window.disconnect = disconnect;
-  window.sendDataMessage = sendDataMessage;
-  window.requestFullscreen = requestFullscreen;
-  window.showInvite = showInvite;
-  window.getSettingValue = getSettingValue;
+  return installRuntime().start(callback);
 }

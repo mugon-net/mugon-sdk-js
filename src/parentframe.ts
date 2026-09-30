@@ -1,14 +1,26 @@
 import {
   Channel,
   FromGameframeMessage,
-  PROTOCOL,
+  FromGameframeWindowMessage,
+  NetworkMode,
   ToGameframeDataMessage,
-  ToGameframeSettingsMessage,
-  ToGrameframeConnectedMessage,
-  ToGrameframeDisconnectedMessage,
+  ToGameframeInitMessage,
+  ToGameframeMessage,
+  ToGameframeWindowMessage,
 } from "./protocol";
+import { serveFetchPort } from "./fetch-proxy";
+import type { FetchVersionFile } from "./fetch-proxy";
+import { major as ownMajor, majorOf } from "./version";
 
-export type NetworkMode = "server" | "client";
+export { createVersionFileFetcher } from "./version-file-fetcher";
+export type {
+  VersionFileCache,
+  VersionFileFetcherOptions,
+} from "./version-file-fetcher";
+export type { FetchVersionFile, VersionFileRequest } from "./fetch-proxy";
+
+export type { NetworkMode } from "./protocol";
+export { major as sdkMajor } from "./version";
 
 // The identity a transport assigns this peer once connected.
 export interface TransportIdentity {
@@ -38,8 +50,8 @@ export interface ParentframeTransport {
   close(): void;
 }
 
-// Thrown by Parentframe.connect("client") when no server peer is available yet,
-// so the caller can surface a distinct message.
+// Thrown when a client can't find a server peer yet, so the caller can surface
+// a distinct message.
 export class NoServerAvailableError extends Error {
   constructor() {
     super("no server has connected yet");
@@ -47,184 +59,415 @@ export class NoServerAvailableError extends Error {
   }
 }
 
+export class HandshakeTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(
+      `no \`hello\` received from the game within ${timeoutMs / 1000}s: is the game built with \`@mugon/sdk\` ${ownMajor}.x and does it load the SDK first?`,
+    );
+    this.name = "HandshakeTimeoutError";
+  }
+}
+
+export class SdkMajorMismatchError extends Error {
+  constructor(
+    readonly declaredMajor: number,
+    readonly gameSdkVersion: string,
+  ) {
+    super(
+      `game declares SDK major ${declaredMajor} but bundles SDK ${gameSdkVersion}`,
+    );
+    this.name = "SdkMajorMismatchError";
+  }
+}
+
+// The steps of a launch, reported as each one completes. `frame-created`,
+// `network-ready` and `hello-received` happen in parallel and in any order.
+export type LaunchPhase =
+  "frame-created" | "network-ready" | "hello-received" | "running";
+
+export interface LoadProgress {
+  // What the game reported through `ctx.progress`, or else the share of
+  // `totalBytes` served so far (kept below 1 until the game is done).
+  fraction?: number;
+  label?: string;
+  loadedBytes: number;
+  done: boolean;
+}
+
+export interface GameframeHandle {
+  readonly contentWindow: {
+    postMessage(
+      message: unknown,
+      targetOrigin: string,
+      transfer?: Transferable[],
+    ): void;
+  } | null;
+}
+
+export interface ParentframeMessageEvent {
+  source: unknown;
+  data: unknown;
+  ports: readonly MessagePort[];
+}
+
+export interface ParentframeMessageTarget {
+  addEventListener(
+    type: "message",
+    listener: (event: ParentframeMessageEvent) => void,
+  ): void;
+  removeEventListener(
+    type: "message",
+    listener: (event: ParentframeMessageEvent) => void,
+  ): void;
+}
+
 export interface ParentframeOptions {
-  // The iframe hosting the game; the parentframe hands it one end of a
-  // MessageChannel once it loads.
-  gameFrame: HTMLIFrameElement;
-  // The transport used to reach the other peers.
   transport: ParentframeTransport;
-  // Called when the gameframe reports a protocol version different from the one
-  // this SDK speaks; the connection is unusable in that case.
-  onProtocolMismatch?: (gameProtocol: string, expected: string) => void;
-  // Called once the gameframe acknowledges the handshake with a matching
-  // protocol version.
-  onHandshakeComplete?: () => void;
+  fetchVersionFile: FetchVersionFile;
+  onPhase?: (phase: LaunchPhase) => void;
+  onProgress?: (progress: LoadProgress) => void;
   // Called when the game asks the host page to show its join QR code / invite link.
   onShowInviteRequest?: () => void;
+  // How long to wait for the game's `hello` before giving up.
+  handshakeTimeoutMs?: number;
+  // Where the window `message` events arrive; defaults to `window`.
+  messageTarget?: ParentframeMessageTarget;
 }
+
+export type LaunchOptions = {
+  src: string;
+  mode: NetworkMode;
+  settings?: Record<string, string>;
+  // Size of all the game's files; enables the byte-based progress estimate.
+  totalBytes?: number;
+  // The SDK major the game version is recorded with; defaults to this
+  // package's own major.
+  expectedMajor?: number;
+} & (
+  | { container: HTMLElement; iframeFactory?: never }
+  // The factory attaches the iframe and points it at `src`.
+  | { iframeFactory: (src: string) => GameframeHandle; container?: never }
+);
 
 export interface ParentframeConnection {
   mode: NetworkMode;
   clientId: string;
-  serverId?: string;
+  serverId: string;
   close(): void;
 }
 
-// Parentframe bridges the host page and the embedded gameframe: it forwards
-// messages between the gameframe (over a MessageChannel) and a transport,
-// translating the SDK's gameframe protocol into transport calls and back.
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 20_000;
+const PROGRESS_INTERVAL_MS = 100;
+const MAX_ESTIMATED_FRACTION = 0.99;
+
+interface Deferred<Value> {
+  promise: Promise<Value>;
+  resolve(value: Value): void;
+  reject(error: unknown): void;
+}
+
+function defer<Value>(): Deferred<Value> {
+  let resolve!: (value: Value) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<Value>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  promise.catch(() => {});
+  return { promise, resolve, reject };
+}
+
+// Parentframe bridges the host page and the embedded gameframe: it hands the
+// game its files and, once both the game has said hello and the network is up,
+// its context, and from then on forwards messages between the gameframe (over
+// a MessageChannel) and a transport.
 export class Parentframe {
   private readonly options: ParentframeOptions;
-  private readonly transport: ParentframeTransport;
-  private port!: MessagePort;
-  private settings: Record<string, string> = {};
-  // Resolves once the gameframe has acked our "init" with its own "rdy" -- see
-  // establishChildHandshake for why this can't just happen once in the constructor.
-  private readonly childReady: Promise<void>;
+  private readonly messageTarget: ParentframeMessageTarget;
+  private readonly onWindowMessage = (event: ParentframeMessageEvent) =>
+    this.handleWindowMessage(event);
+
+  private frame?: GameframeHandle;
+  private createdIframe?: HTMLIFrameElement;
+  private launchOptions?: LaunchOptions;
+  private handshakeTimer?: ReturnType<typeof setTimeout>;
+  private destroyed = false;
+
+  private helloReceived = false;
+  private stopServingFiles?: () => void;
+  private controlPort?: MessagePort;
+  private initialized = false;
+
+  private identity?: TransportIdentity;
+  private readonly peers = new Set<string>();
+  private pendingData: ToGameframeDataMessage[] = [];
+  private connection = defer<ParentframeConnection>();
+
+  private loadedBytes = 0;
+  private explicitFraction?: number;
+  private explicitLabel?: string;
+  private lastProgressAt = 0;
+  // Once the game says it is done, late file-proxy byte counts must not reopen the overlay.
+  private loadingDone = false;
+  private progressTimer?: ReturnType<typeof setTimeout>;
 
   constructor(options: ParentframeOptions) {
     this.options = options;
-    this.transport = options.transport;
-    this.childReady = this.establishChildHandshake();
+    this.messageTarget = options.messageTarget ?? window;
   }
 
-  // The gameframe only starts listening for our "init" message once its own code
-  // (wasm or otherwise) has loaded far enough to call setupParentFrameCommunication
-  // -- which, for a large wasm module (seen in practice: 100+ MB uncompressed), can
-  // take many seconds. A plain `window.postMessage` isn't buffered for a listener
-  // that doesn't exist yet, so a one-shot send silently drops both the message and
-  // its one-use transferable MessagePort if the gameframe isn't ready in time -- and
-  // everything downstream (settings, connect/disconnect, data) rides on that same
-  // port, so nothing ever arrives again. Fix: keep resending "init" with a fresh
-  // MessageChannel (a transferred port can't be reused) until the gameframe's own
-  // "rdy" ack comes back.
+  // Attaches the message listener first, so a `hello` can never be missed,
+  // then creates the iframe and starts the network in parallel. Resolves once
+  // `init` has been delivered to the game.
   //
-  // Retrying on a plain interval, not gated behind the iframe's own "load" event:
-  // "load" fires once the surrounding HTML/JS shell's own top-level script execution
-  // finishes, which for a wasm-based game is long before the wasm itself has
-  // actually loaded and registered a listener -- so a slow-booting game leaves a
-  // multi-second window during which anything that reconstructs this `Parentframe`
-  // (e.g. a parent-component re-render) would attach a fresh "load" listener that
-  // can never fire again for a navigation that already happened, permanently
-  // stalling the handshake. Starting the retry loop immediately removes that
-  // dependency entirely: an attempt sent before the gameframe's listener exists is
-  // simply dropped, exactly like an attempt sent too early already was.
-  private establishChildHandshake(): Promise<void> {
-    return new Promise((resolve) => {
-      let acked = false;
-      let intervalId: ReturnType<typeof setInterval> | undefined;
+  // If the network fails the returned promise rejects but the frame stays
+  // parked; `retryNetwork` runs the network step again without reloading it.
+  launch(options: LaunchOptions): Promise<ParentframeConnection> {
+    if (this.launchOptions) throw new Error("launch was already called");
+    this.launchOptions = options;
+    this.messageTarget.addEventListener("message", this.onWindowMessage);
+    const timeoutMs =
+      this.options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
+    this.handshakeTimer = setTimeout(
+      () => this.connection.reject(new HandshakeTimeoutError(timeoutMs)),
+      timeoutMs,
+    );
 
-      const trySend = () => {
-        if (acked) return;
-        const channel = new MessageChannel();
-        this.port = channel.port1;
-        this.port.onmessage = (event) => {
-          if (
-            !acked &&
-            (event.data as FromGameframeMessage | undefined)?.type === "rdy"
-          ) {
-            acked = true;
-            if (intervalId !== undefined) clearInterval(intervalId);
-            resolve();
-          }
-          this.handleChildFrameMessage(event);
-        };
-        this.options.gameFrame.contentWindow?.postMessage(
-          { type: "init" },
-          "*",
-          [channel.port2],
-        );
-      };
+    if (options.container) {
+      const iframe = document.createElement("iframe");
+      iframe.setAttribute("sandbox", "allow-scripts allow-pointer-lock");
+      iframe.allow = "fullscreen";
+      iframe.style.cssText = "width:100%;height:100%;border:0";
+      iframe.src = options.src;
+      options.container.appendChild(iframe);
+      this.createdIframe = iframe;
+      this.frame = iframe;
+    } else {
+      this.frame = options.iframeFactory(options.src);
+    }
+    this.options.onPhase?.("frame-created");
 
-      trySend();
-      intervalId = setInterval(trySend, 300);
-    });
+    void this.startNetwork();
+    return this.connection.promise;
   }
 
-  async connect(mode: NetworkMode): Promise<ParentframeConnection> {
-    await this.childReady;
-    const identity = await this.transport.connect(mode, {
-      onData: (peerId, channel, data) => {
-        const msg: ToGameframeDataMessage = {
-          type: "msg",
-          fromclientid: peerId,
-          channel,
-          data,
-        };
-        this.port.postMessage(msg, [data.buffer]);
-      },
-      onPeerConnected: (peerId) => {
-        const msg: ToGrameframeConnectedMessage = {
-          type: "con",
-          clientid: peerId,
-        };
-        this.port.postMessage(msg);
-      },
-      onPeerDisconnected: (peerId) => {
-        const msg: ToGrameframeDisconnectedMessage = {
-          type: "dc",
-          clientid: peerId,
-        };
-        this.port.postMessage(msg);
-      },
+  retryNetwork(): Promise<ParentframeConnection> {
+    if (!this.launchOptions) throw new Error("launch was not called");
+    if (this.initialized) throw new Error("the game was already initialized");
+    this.connection = defer();
+    this.identity = undefined;
+    this.peers.clear();
+    this.pendingData = [];
+    void this.startNetwork();
+    return this.connection.promise;
+  }
+
+  destroy() {
+    this.destroyed = true;
+    clearTimeout(this.handshakeTimer);
+    clearTimeout(this.progressTimer);
+    this.messageTarget.removeEventListener("message", this.onWindowMessage);
+    this.closePorts();
+    this.options.transport.close();
+    this.createdIframe?.remove();
+  }
+
+  private async startNetwork() {
+    const { mode } = this.launchOptions!;
+    try {
+      const identity = await this.options.transport.connect(mode, {
+        onData: (peerId, channel, data) => {
+          const message: ToGameframeDataMessage = {
+            type: "msg",
+            fromclientid: peerId,
+            channel,
+            data,
+          };
+          if (this.initialized) {
+            this.postToGame(message, [data.buffer]);
+          } else {
+            this.pendingData.push(message);
+          }
+        },
+        onPeerConnected: (peerId) => {
+          this.peers.add(peerId);
+          if (this.initialized)
+            this.postToGame({ type: "con", clientid: peerId });
+        },
+        onPeerDisconnected: (peerId) => {
+          this.peers.delete(peerId);
+          if (this.initialized)
+            this.postToGame({ type: "dc", clientid: peerId });
+        },
+      });
+      if (this.destroyed) return;
+      if (mode === "client" && !identity.serverId) {
+        this.options.transport.close();
+        throw new NoServerAvailableError();
+      }
+      this.identity = identity;
+      this.options.onPhase?.("network-ready");
+      this.maybeInit();
+    } catch (error) {
+      this.connection.reject(error);
+    }
+  }
+
+  private handleWindowMessage(event: ParentframeMessageEvent) {
+    if (!this.frame || event.source !== this.frame.contentWindow) return;
+    const message = event.data as FromGameframeWindowMessage | undefined;
+    if (message?.type === "hello") this.handleHello(message.sdkVersion);
+  }
+
+  private handleHello(sdkVersion: unknown) {
+    const expectedMajor = this.launchOptions!.expectedMajor ?? ownMajor;
+    const gameVersion = String(sdkVersion);
+    if (majorOf(gameVersion) !== expectedMajor) {
+      this.postToWindow({
+        type: "reject",
+        reason: `the platform runs SDK major ${expectedMajor} but the game bundles ${gameVersion}`,
+      });
+      this.connection.reject(
+        new SdkMajorMismatchError(expectedMajor, gameVersion),
+      );
+      return;
+    }
+
+    const firstHello = !this.helloReceived;
+    this.helloReceived = true;
+    clearTimeout(this.handshakeTimer);
+    this.closePorts();
+    this.initialized = false;
+    this.loadingDone = false;
+
+    const fetchChannel = new MessageChannel();
+    this.stopServingFiles = serveFetchPort(fetchChannel.port1, {
+      fetchVersionFile: this.options.fetchVersionFile,
+      onBytes: (bytes) => this.countBytes(bytes),
     });
+    this.postToWindow({ type: "fetch-port" }, [fetchChannel.port2]);
+    if (firstHello) this.options.onPhase?.("hello-received");
+    this.maybeInit();
+  }
 
-    if (mode === "client" && !identity.serverId) {
-      this.transport.close();
-      throw new NoServerAvailableError();
+  private maybeInit() {
+    if (!this.helloReceived || !this.identity || this.initialized) return;
+    const { mode, settings } = this.launchOptions!;
+    const identity = this.identity;
+
+    const channel = new MessageChannel();
+    this.controlPort = channel.port1;
+    channel.port1.onmessage = (event) => this.handleGameMessage(event.data);
+    const serverId = mode === "server" ? identity.clientId : identity.serverId!;
+    // A client always has its server among its peers, whether or not the
+    // transport reported it as connected on its own.
+    if (mode === "client") this.peers.add(serverId);
+    const init: ToGameframeInitMessage = {
+      type: "init",
+      role: mode,
+      ownId: identity.clientId,
+      serverId,
+      settings: settings ?? {},
+      initialPeers: [...this.peers],
+    };
+    this.postToWindow(init, [channel.port2]);
+    this.initialized = true;
+    for (const message of this.pendingData.splice(0)) {
+      this.postToGame(message, [message.data.buffer]);
     }
-
-    this.settings = { "mugon.networkmode": mode };
-    if (mode === "server") {
-      this.settings["mugon.serverid"] = identity.clientId;
-    } else {
-      this.settings["mugon.clientid"] = identity.clientId;
-      this.settings["mugon.serverid"] = identity.serverId!;
-    }
-
-    this.sendSettings();
-    setTimeout(() => this.sendReady(), 250);
-
-    return {
+    this.options.onPhase?.("running");
+    this.connection.resolve({
       mode,
       clientId: identity.clientId,
-      serverId: identity.serverId,
-      close: () => this.transport.close(),
-    };
+      serverId: init.serverId,
+      close: () => this.options.transport.close(),
+    });
   }
 
-  private handleChildFrameMessage(event: MessageEvent<FromGameframeMessage>) {
-    const msg = event.data;
-
-    switch (msg.type) {
-      case "rdy":
-        if (msg.protocol !== PROTOCOL) {
-          this.options.onProtocolMismatch?.(msg.protocol, PROTOCOL);
-        } else {
-          this.options.onHandshakeComplete?.();
-        }
-        break;
+  private handleGameMessage(message: FromGameframeMessage | undefined) {
+    switch (message?.type) {
       case "msg":
-        this.transport.send(msg.toclientid, msg.channel, msg.data);
+        this.options.transport.send(
+          message.toclientid,
+          message.channel,
+          message.data,
+        );
         break;
       case "drp":
-        this.transport.drop(msg.clientid);
+        this.options.transport.drop(message.clientid);
         break;
       case "showinvite":
         this.options.onShowInviteRequest?.();
         break;
+      case "progress":
+        if (
+          typeof message.fraction === "number" &&
+          Number.isFinite(message.fraction)
+        ) {
+          this.explicitFraction = Math.min(1, Math.max(0, message.fraction));
+        }
+        if (typeof message.label === "string") {
+          this.explicitLabel = message.label;
+        }
+        this.reportProgress(false);
+        break;
+      case "done":
+        this.reportProgress(true);
+        break;
     }
   }
 
-  private sendSettings() {
-    const msg: ToGameframeSettingsMessage = {
-      type: "set",
-      settings: this.settings,
-    };
-    this.port.postMessage(msg);
+  private countBytes(bytes: number) {
+    this.loadedBytes += bytes;
+    const sinceLastReport = Date.now() - this.lastProgressAt;
+    if (sinceLastReport >= PROGRESS_INTERVAL_MS) {
+      this.reportProgress(false);
+    } else {
+      // Without this the last chunks of a fast (cached) download would never show.
+      this.progressTimer ??= setTimeout(
+        () => this.reportProgress(false),
+        PROGRESS_INTERVAL_MS - sinceLastReport,
+      );
+    }
   }
 
-  private sendReady() {
-    this.port.postMessage({ type: "rdy", protocol: PROTOCOL });
+  private reportProgress(done: boolean) {
+    clearTimeout(this.progressTimer);
+    this.progressTimer = undefined;
+    if (this.loadingDone && !done) return;
+    this.loadingDone ||= done;
+    this.lastProgressAt = Date.now();
+    const { totalBytes } = this.launchOptions ?? {};
+    const estimate =
+      totalBytes && totalBytes > 0
+        ? Math.min(MAX_ESTIMATED_FRACTION, this.loadedBytes / totalBytes)
+        : undefined;
+    this.options.onProgress?.({
+      fraction: done ? 1 : (this.explicitFraction ?? estimate),
+      label: this.explicitLabel,
+      loadedBytes: this.loadedBytes,
+      done,
+    });
+  }
+
+  private postToWindow(
+    message: ToGameframeWindowMessage,
+    transfer: Transferable[] = [],
+  ) {
+    this.frame?.contentWindow?.postMessage(message, "*", transfer);
+  }
+
+  private postToGame(
+    message: ToGameframeMessage,
+    transfer: Transferable[] = [],
+  ) {
+    this.controlPort?.postMessage(message, transfer);
+  }
+
+  private closePorts() {
+    this.stopServingFiles?.();
+    this.controlPort?.close();
+    this.stopServingFiles = undefined;
+    this.controlPort = undefined;
   }
 }

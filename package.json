@@ -1,19 +1,40 @@
 {
   "name": "@mugon/sdk",
-  "version": "0.0.1",
+  "version": "0.1.0",
+  "description": "SDK for games running on the mugon.net platform: the in-game runtime (Mugon.start) and the parentframe host side.",
+  "keywords": [
+    "mugon",
+    "game",
+    "sdk",
+    "multiplayer",
+    "webrtc",
+    "wasm"
+  ],
+  "license": "MIT OR Apache-2.0",
+  "homepage": "https://github.com/mugon-net/mugon-sdk-js#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mugon-net/mugon-sdk-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mugon-net/mugon-sdk-js/issues"
+  },
   "type": "module",
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && vite build --config vite.iife.config.ts",
     "dev": "vite build --watch",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && npm test"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
     "prettier": "^3.8.3",
     "typescript": "^6.0.3",
     "vite": "^8.0.16",
-    "vite-plugin-dts": "^5.0.3"
+    "vite-plugin-dts": "^5.0.3",
+    "vitest": "^5.0.2"
   },
   "module": "./dist/index.js",
   "exports": {
@@ -25,17 +46,17 @@
       "types": "./dist/protocol.d.ts",
       "import": "./dist/protocol.js"
     },
-    "./gameframe": {
-      "types": "./dist/gameframe.d.ts",
-      "import": "./dist/gameframe.js"
-    },
     "./parentframe": {
       "types": "./dist/parentframe.d.ts",
       "import": "./dist/parentframe.js"
-    }
+    },
+    "./iife": "./dist/mugon.iife.js"
   },
   "types": "./dist/index.d.ts",
   "files": [
     "dist"
-  ]
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }
