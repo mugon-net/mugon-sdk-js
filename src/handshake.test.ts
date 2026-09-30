@@ -292,7 +292,9 @@ describe("byte progress", () => {
   });
 
   it("does not reopen the overlay when bytes are counted after the game said done", async () => {
-    const harness = createHarness(async () => new Response(new Uint8Array(1000)));
+    const harness = createHarness(
+      async () => new Response(new Uint8Array(1000)),
+    );
     active = harness.parentframe;
     harness.transport.connection.resolve(serverIdentity);
     const launched = harness.launch("server", undefined, undefined, 10_000);

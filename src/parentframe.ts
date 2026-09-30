@@ -83,7 +83,10 @@ export class SdkMajorMismatchError extends Error {
 // The steps of a launch, reported as each one completes. `frame-created`,
 // `network-ready` and `hello-received` happen in parallel and in any order.
 export type LaunchPhase =
-  "frame-created" | "network-ready" | "hello-received" | "running";
+  | "frame-created"
+  | "network-ready"
+  | "hello-received"
+  | "running";
 
 export interface LoadProgress {
   // What the game reported through `ctx.progress`, or else the share of

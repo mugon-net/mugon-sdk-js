@@ -97,7 +97,9 @@ export type FetchCancelMessage = { type: "cancel"; id: number };
 // Returns `bytes` of the parentframe's send window once the game consumed them.
 export type FetchCreditMessage = { type: "credit"; id: number; bytes: number };
 export type FromGameframeFetchMessage =
-  FetchRequestMessage | FetchCancelMessage | FetchCreditMessage;
+  | FetchRequestMessage
+  | FetchCancelMessage
+  | FetchCreditMessage;
 
 // --- fetch port, parentframe -> gameframe ---
 
