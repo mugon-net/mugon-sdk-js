@@ -1,3 +1,4 @@
+import { teeBounded } from "./bounded-tee";
 import type { FetchVersionFile, VersionFileRequest } from "./fetch-proxy";
 
 export class VersionFileRefusedError extends Error {
@@ -24,7 +25,12 @@ export interface VersionFileFetcherOptions {
   cacheName: string | null;
   cacheStorage?: { open(cacheName: string): Promise<VersionFileCache> };
   fetchImpl?: typeof fetch;
+  // How far a download may run ahead of the slower of "the game reads it" and "the
+  // cache stores it" before it is held back. Defaults to 8 MiB.
+  maxBufferedBytes?: number;
 }
+
+const DEFAULT_MAX_BUFFERED_BYTES = 8 * 1024 * 1024;
 
 const FORBIDDEN_PATH_CHARACTERS = /[\\\u0000-\u001f\u007f?#]/;
 // Percent-encoded dots, separators, `%` itself, NUL, `?` and `#`.
@@ -143,8 +149,28 @@ export function createVersionFileFetcher(
     assertTrailingSlash(options.versionBaseUrl);
   }
   const fetchImpl = options.fetchImpl ?? ((...args) => fetch(...args));
+  const maxBufferedBytes =
+    options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
   let cachePromise: Promise<VersionFileCache | undefined> | undefined;
   let persistRequested = false;
+  let writing = false;
+  const writeQueue: (() => void)[] = [];
+
+  // Cache writes run one at a time, so several big downloads don't all pile up
+  // behind the (slow) Cache API at once.
+  function acquireWrite() {
+    if (!writing) {
+      writing = true;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => writeQueue.push(resolve));
+  }
+
+  function releaseWrite() {
+    const next = writeQueue.shift();
+    if (next) next();
+    else writing = false;
+  }
 
   function openCache() {
     cachePromise ??= (async () => {
@@ -161,19 +187,25 @@ export function createVersionFileFetcher(
     return cachePromise;
   }
 
+  // `response` is asked for once it is this write's turn; returning undefined skips it.
   async function store(
     cache: VersionFileCache,
     key: string,
-    response: Response,
+    response: () => Response | undefined,
   ) {
-    if (!persistRequested && typeof navigator !== "undefined") {
-      persistRequested = true;
-      void navigator.storage?.persist?.().catch(() => {});
-    }
+    await acquireWrite();
     try {
-      await cache.put(key, response);
+      const toStore = response();
+      if (!toStore) return;
+      if (!persistRequested && typeof navigator !== "undefined") {
+        persistRequested = true;
+        void navigator.storage?.persist?.().catch(() => {});
+      }
+      await cache.put(key, toStore);
     } catch {
       // Quota or an aborted download; the next load fetches again.
+    } finally {
+      releaseWrite();
     }
   }
 
@@ -201,10 +233,10 @@ export function createVersionFileFetcher(
     if (upstream.status !== 200) return refusedResponse(upstream);
     const blob = await upstream.blob();
     if (cache) {
-      await store(
+      void store(
         cache,
         key,
-        new Response(blob, { status: 200, headers: upstream.headers }),
+        () => new Response(blob, { status: 200, headers: upstream.headers }),
       );
     }
     return { blob, headers: upstream.headers };
@@ -268,12 +300,18 @@ export function createVersionFileFetcher(
     if (upstream.status !== 200) return refusedResponse(upstream);
     if (request.method === "HEAD" || !cache || !upstream.body) return upstream;
 
-    const [forGame, forCache] = upstream.body.tee();
-    void store(
-      cache,
-      key,
-      new Response(forCache, { status: 200, headers: upstream.headers }),
+    const tee = teeBounded(upstream.body, maxBufferedBytes);
+    void store(cache, key, () =>
+      tee.admitSecondary()
+        ? new Response(tee.secondary, {
+            status: 200,
+            headers: upstream.headers,
+          })
+        : undefined,
     );
-    return new Response(forGame, { status: 200, headers: upstream.headers });
+    return new Response(tee.primary, {
+      status: 200,
+      headers: upstream.headers,
+    });
   };
 }
