@@ -35,7 +35,7 @@ export interface MugonContext {
   readonly serverId: string;
   readonly settings: Readonly<Record<string, string>>;
   // Snapshot at init; later changes arrive through `on`.
-  readonly peers: readonly string[];
+  readonly initialPeers: readonly string[];
   send(peerId: string, data: Uint8Array, channel?: Channel): void;
   drop(peerId: string): void;
   // Events that arrive while no handler is registered for them are queued and
@@ -142,7 +142,7 @@ export function createGameframeRuntime(env: GameframeEnv) {
       ownId: init.ownId,
       serverId: init.serverId,
       settings: Object.freeze({ ...init.settings }),
-      peers: Object.freeze([...init.initialPeers]),
+      initialPeers: Object.freeze([...init.initialPeers]),
       send(peerId, data, channel = Channel.ReliableOrdered) {
         sendToParent({ type: "msg", toclientid: peerId, channel, data }, [
           data.buffer,

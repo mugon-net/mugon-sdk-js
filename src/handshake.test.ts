@@ -251,7 +251,7 @@ describe("handshake ordering", () => {
     expect(harness.childWindow.delivered.length).toBeGreaterThan(
       deliveredBefore,
     );
-    expect(secondContext.peers).toEqual(["peer-a"]);
+    expect(secondContext.initialPeers).toEqual(["peer-a"]);
   });
 });
 
@@ -332,7 +332,7 @@ describe("context handoff", () => {
     harness.transport.connection.resolve({ clientId: "c1", serverId: "s1" });
     harness.launch("client");
     const context = await harness.startGame().context;
-    expect(context.peers).toEqual(["s1"]);
+    expect(context.initialPeers).toEqual(["s1"]);
   });
 });
 
@@ -406,7 +406,7 @@ describe("events around init", () => {
 
     const game = harness.startGame();
     const context = await game.context;
-    expect(context.peers).toEqual(["b"]);
+    expect(context.initialPeers).toEqual(["b"]);
 
     const received: unknown[] = [];
     context.on("message", (message) => received.push(message));

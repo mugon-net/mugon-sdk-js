@@ -6,7 +6,7 @@ A game runs in a sandboxed iframe on the platform's page (the _parentframe_). Th
 two halves:
 
 - **The game side** (`@mugon/sdk`, `mugon.iife.js`): `Mugon.start`, which hands your game its
-  context (role, ids, peers, messaging, loading progress) and serves its files through the
+  context (role, ids, initial peers, messaging, loading progress) and serves its files through the
   platform so large downloads are cached.
 - **The parentframe side** (`@mugon/sdk/parentframe`): what the platform and the `mugon` CLI's
   dev server use to host a game. Game developers don't need it.
@@ -31,7 +31,7 @@ Mugon.start(async (ctx) => {
 Without a bundler, load `dist/mugon.iife.js` as the **first** `<script>` of your `index.html`; it
 defines a global `Mugon` (`Mugon.start`, `Mugon.Channel`).
 
-The context (`ctx`) offers `role`, `ownId`, `serverId`, `peers`, `settings`, `send`, `drop`, `on`,
+The context (`ctx`) offers `role`, `ownId`, `serverId`, `initialPeers`, `settings`, `send`, `drop`, `on`,
 `showInvite`, `toggleFullscreen` and `progress.set`/`progress.done`. It is also published as
 `window.mugon` for code that can't be handed it, such as a wasm module.
 
