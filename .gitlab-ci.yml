@@ -3,6 +3,9 @@
     - changes:
         - libraries/mugon-sdk-js/**/*
 
+# npm ci, not npm install: a package-lock.json that is out of sync with package.json fails the job
+# instead of being rewritten, and the mirror's own CI (npm ci) stays green.
+
 mugon-sdk-js:codestyle:
   stage: codestyle
   image: node:26-alpine
@@ -14,10 +17,10 @@ mugon-sdk-js:codestyle:
       files:
         - libraries/mugon-sdk-js/package-lock.json
     paths:
-      - libraries/mugon-sdk-js/node_modules/
+      - .npm/
   script:
     - cd libraries/mugon-sdk-js
-    - npm install --workspaces=false
+    - npm ci --workspaces=false --cache $CI_PROJECT_DIR/.npm --prefer-offline
     - npm run format:check
 
 mugon-sdk-js:build:
@@ -29,11 +32,27 @@ mugon-sdk-js:build:
       files:
         - libraries/mugon-sdk-js/package-lock.json
     paths:
-      - libraries/mugon-sdk-js/node_modules/
+      - .npm/
   script:
     - cd libraries/mugon-sdk-js
-    - npm install --workspaces=false
+    - npm ci --workspaces=false --cache $CI_PROJECT_DIR/.npm --prefer-offline
     - npm run build
   artifacts:
     paths:
       - libraries/mugon-sdk-js/dist/
+
+mugon-sdk-js:test:
+  stage: test
+  image: node:26-alpine
+  needs: []
+  rules: !reference [.mugon-sdk-js-changes, rules]
+  cache:
+    key:
+      files:
+        - libraries/mugon-sdk-js/package-lock.json
+    paths:
+      - .npm/
+  script:
+    - cd libraries/mugon-sdk-js
+    - npm ci --workspaces=false --cache $CI_PROJECT_DIR/.npm --prefer-offline
+    - npm test

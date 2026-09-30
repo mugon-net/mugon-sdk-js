@@ -10,7 +10,7 @@
     "webrtc",
     "wasm"
   ],
-  "license": "MIT OR Apache-2.0",
+  "license": "MIT",
   "homepage": "https://github.com/mugon-net/mugon-sdk-js#readme",
   "repository": {
     "type": "git",
@@ -54,7 +54,8 @@
   },
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "LICENSE-MIT"
   ],
   "publishConfig": {
     "access": "public"
