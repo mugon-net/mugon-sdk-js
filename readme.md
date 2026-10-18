@@ -35,6 +35,11 @@ The context (`ctx`) offers `role`, `ownId`, `serverId`, `initialPeers`, `setting
 `showInvite`, `toggleFullscreen` and `progress.set`/`progress.done`. It is also published as
 `window.mugon` for code that can't be handed it, such as a wasm module.
 
+`ctx.settings` holds the values the lobby chose for the settings the game version declares in
+`mugon.toml`, typed as declared (boolean, number, string or string list). `getBoolean(key)`,
+`getNumber(key)`, `getString(key)` and `getStrings(key)` read one with a type check and return
+`undefined` if it is absent or declared with another type.
+
 The platform closes its loading overlay when the `Mugon.start` callback finishes or when you call
 `ctx.progress.done()`.
 

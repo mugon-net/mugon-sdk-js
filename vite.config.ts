@@ -16,6 +16,8 @@ export default defineConfig({
         index: resolve(__dirname, "src/index.ts"),
         protocol: resolve(__dirname, "src/protocol.ts"),
         parentframe: resolve(__dirname, "src/parentframe.ts"),
+        settings: resolve(__dirname, "src/settings.ts"),
+        expression: resolve(__dirname, "src/expression.ts"),
       },
       formats: ["es"],
     },

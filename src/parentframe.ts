@@ -7,6 +7,7 @@ import {
   ToGameframeInitMessage,
   ToGameframeMessage,
   ToGameframeWindowMessage,
+  SettingValue,
 } from "./protocol";
 import { serveFetchPort } from "./fetch-proxy";
 import type { FetchVersionFile } from "./fetch-proxy";
@@ -131,6 +132,11 @@ export interface ParentframeOptions {
   onProgress?: (progress: LoadProgress) => void;
   // Called when the game asks the host page to show its join QR code / invite link.
   onShowInviteRequest?: () => void;
+  // Called when the host's game asks to end the session. Never called for a client.
+  onEndGameRequest?: () => void;
+  // Called when the host's game asks for a next round; `settings` is the
+  // game's complete, shape-checked set. Never called for a client.
+  onNextGameRequest?: (settings: Record<string, SettingValue>) => void;
   // How long to wait for the game's `hello` before giving up.
   handshakeTimeoutMs?: number;
   // Where the window `message` events arrive; defaults to `window`.
@@ -140,7 +146,7 @@ export interface ParentframeOptions {
 export type LaunchOptions = {
   src: string;
   mode: NetworkMode;
-  settings?: Record<string, string>;
+  settings?: Record<string, SettingValue>;
   // Size of all the game's files; enables the byte-based progress estimate.
   totalBytes?: number;
   // The SDK major the game version is recorded with; defaults to this
@@ -160,6 +166,9 @@ export interface ParentframeConnection {
 }
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 20_000;
+const MAX_NEXT_GAME_SETTINGS = 256;
+const MAX_NEXT_GAME_STRING_LENGTH = 4096;
+const MAX_NEXT_GAME_SELECTIONS = 256;
 const PROGRESS_INTERVAL_MS = 100;
 const MAX_ESTIMATED_FRACTION = 0.99;
 
@@ -178,6 +187,39 @@ function defer<Value>(): Deferred<Value> {
   });
   promise.catch(() => {});
   return { promise, resolve, reject };
+}
+
+function isSettingValue(value: unknown): value is SettingValue {
+  if (typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string")
+    return value.length <= MAX_NEXT_GAME_STRING_LENGTH;
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_NEXT_GAME_SELECTIONS &&
+    value.every(
+      (entry) =>
+        typeof entry === "string" &&
+        entry.length <= MAX_NEXT_GAME_STRING_LENGTH,
+    )
+  );
+}
+
+// The game is untrusted, so what it sends for `nextGame` is checked before it
+// goes anywhere near the platform; the platform validates the values themselves.
+function parseNextGameSettings(
+  raw: unknown,
+): Record<string, SettingValue> | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return;
+  const entries = Object.entries(raw);
+  if (entries.length > MAX_NEXT_GAME_SETTINGS) return;
+  const settings: Record<string, SettingValue> = {};
+  for (const [key, value] of entries) {
+    if (key.length > MAX_NEXT_GAME_STRING_LENGTH || !isSettingValue(value))
+      return;
+    settings[key] = value;
+  }
+  return settings;
 }
 
 // Parentframe bridges the host page and the embedded gameframe: it hands the
@@ -402,6 +444,16 @@ export class Parentframe {
       case "showinvite":
         this.options.onShowInviteRequest?.();
         break;
+      case "endgame":
+        if (this.launchOptions?.mode === "server")
+          this.options.onEndGameRequest?.();
+        break;
+      case "nextgame": {
+        if (this.launchOptions?.mode !== "server") break;
+        const settings = parseNextGameSettings(message.settings);
+        if (settings) this.options.onNextGameRequest?.(settings);
+        break;
+      }
       case "progress":
         if (
           typeof message.fraction === "number" &&

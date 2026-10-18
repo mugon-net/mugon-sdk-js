@@ -16,6 +16,10 @@ export const CHANNEL_COUNT = 4;
 
 export type NetworkMode = "server" | "client";
 
+// A setting value as the game receives it, carrying the type the setting was
+// declared with.
+export type SettingValue = boolean | number | string | string[];
+
 // Within one SDK major these shapes only ever grow (new optional fields, new
 // message types); published games keep their bundled SDK forever.
 
@@ -34,7 +38,7 @@ export type ToGameframeInitMessage = {
   role: NetworkMode;
   ownId: string;
   serverId: string;
-  settings: Record<string, string>;
+  settings: Record<string, SettingValue>;
   initialPeers: string[];
 };
 export type ToGameframeRejectMessage = { type: "reject"; reason: string };
@@ -60,12 +64,22 @@ export type FromGameframeProgressMessage = {
   label?: string;
 };
 export type FromGameframeDoneMessage = { type: "done" };
+// Asks the host page to send everyone back to the lobby; honoured for the host only.
+export type FromGameframeEndGameMessage = { type: "endgame" };
+// Asks the host page to start the next round with these settings, which replace
+// the lobby's complete set; the host confirms first. Honoured for the host only.
+export type FromGameframeNextGameMessage = {
+  type: "nextgame";
+  settings: Record<string, SettingValue>;
+};
 export type FromGameframeMessage =
   | FromGameframeDataMessage
   | FromGameframeDroppedMessage
   | FromGameframeShowInviteMessage
   | FromGameframeProgressMessage
-  | FromGameframeDoneMessage;
+  | FromGameframeDoneMessage
+  | FromGameframeEndGameMessage
+  | FromGameframeNextGameMessage;
 
 // --- parentframe -> gameframe, via the control port ---
 

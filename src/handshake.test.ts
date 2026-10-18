@@ -103,6 +103,8 @@ function createHarness(
     phases: [] as string[],
     progress: [] as unknown[],
     showInvite: 0,
+    endGame: 0,
+    nextGame: [] as Record<string, unknown>[],
   };
   const parentframe = new Parentframe({
     transport,
@@ -111,6 +113,8 @@ function createHarness(
     onPhase: (phase) => events.phases.push(phase),
     onProgress: (progress) => events.progress.push(progress),
     onShowInviteRequest: () => events.showInvite++,
+    onEndGameRequest: () => events.endGame++,
+    onNextGameRequest: (settings) => events.nextGame.push(settings),
     handshakeTimeoutMs: 1000,
   });
 
@@ -473,6 +477,121 @@ describe("game to parent", () => {
         { fraction: 1, label: "textures", loadedBytes: 0, done: false },
       ]),
     );
+  });
+
+  it("relays endGame and nextGame from the host", async () => {
+    const harness = createHarness();
+    active = harness.parentframe;
+    harness.transport.connection.resolve(serverIdentity);
+    harness.launch();
+    const context = await harness.startGame().context;
+
+    context.endGame();
+    context.nextGame({ rounds: 7, hard: true, maps: ["a", "b"], name: "x" });
+
+    await vi.waitFor(() => expect(harness.events.nextGame).toHaveLength(1));
+    expect(harness.events.endGame).toBe(1);
+    expect(harness.events.nextGame[0]).toEqual({
+      rounds: 7,
+      hard: true,
+      maps: ["a", "b"],
+      name: "x",
+    });
+  });
+
+  it("drops endGame and nextGame on a client", async () => {
+    const harness = createHarness();
+    active = harness.parentframe;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    harness.transport.connection.resolve({ clientId: "c1", serverId: "s1" });
+    harness.launch("client");
+    const context = await harness.startGame().context;
+
+    context.endGame();
+    context.nextGame({ rounds: 7 });
+    context.showInvite();
+
+    await vi.waitFor(() => expect(harness.events.showInvite).toBe(1));
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(harness.events.endGame).toBe(0);
+    expect(harness.events.nextGame).toEqual([]);
+    warn.mockRestore();
+  });
+
+  it("ignores endgame and nextgame messages from a client's frame", async () => {
+    const controlPorts: MessagePort[] = [];
+    const frame = {
+      postMessage(
+        _message: unknown,
+        _origin: string,
+        transfer?: Transferable[],
+      ) {
+        controlPorts.push(...((transfer ?? []) as MessagePort[]));
+      },
+    };
+    const listeners = new Set<(event: ParentframeMessageEvent) => void>();
+    const requests: string[] = [];
+    const transport = new FakeTransport();
+    transport.connection.resolve({ clientId: "c1", serverId: "s1" });
+    const parentframe = new Parentframe({
+      transport,
+      fetchVersionFile: () => Promise.reject(new Error("unused")),
+      messageTarget: {
+        addEventListener: (_type, listener) => listeners.add(listener),
+        removeEventListener: (_type, listener) => listeners.delete(listener),
+      },
+      onShowInviteRequest: () => requests.push("invite"),
+      onEndGameRequest: () => requests.push("end"),
+      onNextGameRequest: () => requests.push("next"),
+    });
+    active = parentframe;
+    void parentframe.launch({
+      src: "about:blank",
+      mode: "client",
+      iframeFactory: () => ({ contentWindow: frame }),
+    });
+    for (const listener of listeners) {
+      listener({
+        source: frame,
+        data: { type: "hello", sdkVersion: version },
+        ports: [],
+      });
+    }
+    await vi.waitFor(() => expect(controlPorts).toHaveLength(2));
+
+    const gameSide = controlPorts[1];
+    gameSide.postMessage({ type: "endgame" });
+    gameSide.postMessage({ type: "nextgame", settings: { rounds: 1 } });
+    gameSide.postMessage({ type: "showinvite" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(requests).toEqual(["invite"]);
+  });
+
+  it("drops malformed and oversized nextgame settings", async () => {
+    const harness = createHarness();
+    active = harness.parentframe;
+    harness.transport.connection.resolve(serverIdentity);
+    harness.launch();
+    const context = await harness.startGame().context;
+    const send = (settings: unknown) =>
+      context.nextGame(settings as Record<string, never>);
+
+    send(null);
+    send([1, 2]);
+    send({ nested: { a: 1 } });
+    send({ bad: Number.NaN });
+    send({ list: [1, 2] });
+    send({ long: "x".repeat(5000) });
+    send(
+      Object.fromEntries(
+        Array.from({ length: 300 }, (_, index) => [`k${index}`, 1]),
+      ),
+    );
+    context.nextGame({ ok: 1 });
+
+    await vi.waitFor(() => expect(harness.events.nextGame).toHaveLength(1));
+    expect(harness.events.nextGame).toEqual([{ ok: 1 }]);
   });
 
   it("reports done when the start callback resolves", async () => {

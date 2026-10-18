@@ -3,6 +3,7 @@ import {
   FromGameframeMessage,
   FromGameframeWindowMessage,
   NetworkMode,
+  SettingValue,
   ToGameframeInitMessage,
   ToGameframeMessage,
   ToGameframeWindowMessage,
@@ -33,7 +34,13 @@ export interface MugonContext {
   readonly role: NetworkMode;
   readonly ownId: string;
   readonly serverId: string;
-  readonly settings: Readonly<Record<string, string>>;
+  readonly settings: Readonly<Record<string, SettingValue>>;
+  // Typed reads; each returns undefined when the setting is absent or declared
+  // with another type. A single-choice select reads as a one-element list.
+  getString(key: string): string | undefined;
+  getBoolean(key: string): boolean | undefined;
+  getNumber(key: string): number | undefined;
+  getStrings(key: string): string[] | undefined;
   // Snapshot at init; later changes arrive through `on`.
   readonly initialPeers: readonly string[];
   send(peerId: string, data: Uint8Array, channel?: Channel): void;
@@ -45,6 +52,13 @@ export interface MugonContext {
     handler: MugonEvents[Event],
   ): () => void;
   showInvite(): void;
+  // Host only. Ends the game and sends everyone back to the lobby right away.
+  endGame(): void;
+  // Host only. Asks the platform to start the next round on `settings`, which
+  // must be the complete set (edit `ctx.settings` and pass it back); settings
+  // left out fall back to their defaults. The host confirms before anything
+  // happens, and settings the game version rejects end the game instead.
+  nextGame(settings: Record<string, SettingValue>): void;
   toggleFullscreen(): void;
   progress: {
     set(fraction: number, label?: string): void;
@@ -137,11 +151,30 @@ export function createGameframeRuntime(env: GameframeEnv) {
   }
 
   function buildContext(init: ToGameframeInitMessage): MugonContext {
+    const settings = Object.freeze({ ...init.settings });
     return Object.freeze<MugonContext>({
       role: init.role,
       ownId: init.ownId,
       serverId: init.serverId,
-      settings: Object.freeze({ ...init.settings }),
+      settings,
+      getString: (key) => {
+        const value = settings[key];
+        if (value === undefined) return undefined;
+        return typeof value === "string" ? value : JSON.stringify(value);
+      },
+      getBoolean: (key) => {
+        const value = settings[key];
+        return typeof value === "boolean" ? value : undefined;
+      },
+      getNumber: (key) => {
+        const value = settings[key];
+        return typeof value === "number" ? value : undefined;
+      },
+      getStrings: (key) => {
+        const value = settings[key];
+        if (Array.isArray(value)) return [...value];
+        return typeof value === "string" ? [value] : undefined;
+      },
       initialPeers: Object.freeze([...init.initialPeers]),
       send(peerId, data, channel = Channel.ReliableOrdered) {
         sendToParent({ type: "msg", toclientid: peerId, channel, data }, [
@@ -163,6 +196,20 @@ export function createGameframeRuntime(env: GameframeEnv) {
       },
       showInvite() {
         sendToParent({ type: "showinvite" });
+      },
+      endGame() {
+        if (init.role !== "server") {
+          console.warn("Mugon: endGame() is only available to the host");
+          return;
+        }
+        sendToParent({ type: "endgame" });
+      },
+      nextGame(nextSettings) {
+        if (init.role !== "server") {
+          console.warn("Mugon: nextGame() is only available to the host");
+          return;
+        }
+        sendToParent({ type: "nextgame", settings: nextSettings });
       },
       toggleFullscreen: () => env.toggleFullscreen(),
       progress: {
