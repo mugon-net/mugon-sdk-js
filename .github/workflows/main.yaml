@@ -5,11 +5,15 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # Publishing is manual and a dry run unless explicitly switched off. The version comes
-  # from package.json (bumped in the monorepo, which this repository mirrors) -- this
-  # workflow never commits, so it can't diverge from the mirror.
+  # Publishing is manual and a dry run unless explicitly switched off. The typed version is
+  # checked against package.json (bumped in the monorepo, which this repository mirrors) --
+  # this workflow never commits, so it can't diverge from the mirror.
   workflow_dispatch:
     inputs:
+      version:
+        description: "Version to release (x.y.z); must equal the version in package.json"
+        required: true
+        type: string
       dry-run:
         description: "Only check what would be published (untick to publish to npm)"
         required: true
@@ -60,6 +64,13 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+      - name: Check the requested version against package.json
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "$VERSION" != "${{ inputs.version }}" ]; then
+            echo "package.json is at $VERSION, not ${{ inputs.version }}; bump it in the monorepo first" >&2
+            exit 1
+          fi
       - name: Refuse to republish an existing version
         run: |
           VERSION=$(node -p "require('./package.json').version")
