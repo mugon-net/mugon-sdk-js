@@ -1,0 +1,312 @@
+{
+  "$comment": [
+    "Shared test corpus for the setting expression subset described in grammar.md.",
+    "The 'evaluate' cases run against BOTH implementations (cel-go in the backend,",
+    "@marcbachmann/cel-js in the SDK) and are what pins them to each other.",
+    "The 'validate' cases describe the publish-time subset check and run in Go only.",
+    "Environments map a declared setting key to its CEL value type.",
+    "An evaluate case with 'rejectedBySubset' is legal CEL that both libraries",
+    "must agree on, but that the publish-time subset check refuses; the Go test",
+    "asserts the rejection while the TypeScript test asserts the value."
+  ],
+  "environments": {
+    "default": {
+      "friendly-fire": "bool",
+      "bots": "bool",
+      "round-time": "double",
+      "min-players": "double",
+      "max-players": "double",
+      "map": "string",
+      "modifiers": "list<string>",
+      "server.name": "string"
+    }
+  },
+  "values": {
+    "default": {
+      "friendly-fire": false,
+      "bots": true,
+      "round-time": 120,
+      "min-players": 2,
+      "max-players": 8,
+      "map": "desert",
+      "modifiers": ["fast", "low_gravity"],
+      "server.name": "My server"
+    }
+  },
+  "evaluate": [
+    {
+      "name": "boolean negation",
+      "source": "!settings[\"friendly-fire\"]",
+      "expect": true
+    },
+    {
+      "name": "boolean reference",
+      "source": "settings[\"bots\"]",
+      "expect": true
+    },
+    {
+      "name": "double compared against an int literal",
+      "source": "settings[\"round-time\"] >= 60",
+      "expect": true
+    },
+    {
+      "name": "double compared against a double literal",
+      "source": "settings[\"round-time\"] >= 60.0",
+      "expect": true
+    },
+    {
+      "name": "double comparison that is false",
+      "source": "settings[\"round-time\"] < 60",
+      "expect": false
+    },
+    {
+      "name": "range check",
+      "source": "settings[\"round-time\"] >= 60 && settings[\"round-time\"] <= 600",
+      "expect": true
+    },
+    {
+      "name": "arithmetic with an int literal has no overload",
+      "source": "settings[\"round-time\"] + 1 > 60",
+      "error": true
+    },
+    {
+      "name": "arithmetic with a double literal",
+      "source": "settings[\"round-time\"] + 1.0 > 60.0",
+      "expect": true
+    },
+    {
+      "name": "division",
+      "source": "settings[\"round-time\"] / 2.0 == 60.0",
+      "expect": true
+    },
+    {
+      "name": "multiplication",
+      "source": "settings[\"min-players\"] * 2.0 == settings[\"max-players\"] / 2.0",
+      "expect": true
+    },
+    {
+      "name": "division by zero yields infinity rather than an error",
+      "source": "settings[\"round-time\"] / 0.0 > 1.0",
+      "expect": true
+    },
+    {
+      "name": "unary minus",
+      "source": "-settings[\"round-time\"] < 0.0",
+      "expect": true
+    },
+    {
+      "name": "two references compared",
+      "source": "settings[\"min-players\"] < settings[\"max-players\"]",
+      "expect": true
+    },
+    {
+      "name": "two references with arithmetic",
+      "source": "settings[\"min-players\"] + 1.0 <= settings[\"max-players\"]",
+      "expect": true
+    },
+    {
+      "name": "string equality",
+      "source": "settings[\"map\"] == \"desert\"",
+      "expect": true
+    },
+    {
+      "name": "string inequality",
+      "source": "settings[\"map\"] != \"forest\"",
+      "expect": true
+    },
+    {
+      "name": "disjunction",
+      "source": "settings[\"map\"] == \"desert\" || settings[\"map\"] == \"forest\"",
+      "expect": true
+    },
+    {
+      "name": "key containing a dot",
+      "source": "settings[\"server.name\"] == \"My server\"",
+      "expect": true
+    },
+    {
+      "name": "membership in a multi select",
+      "source": "\"fast\" in settings[\"modifiers\"]",
+      "expect": true
+    },
+    {
+      "name": "membership that is false",
+      "source": "\"slow\" in settings[\"modifiers\"]",
+      "expect": false
+    },
+    {
+      "name": "size of a list",
+      "source": "size(settings[\"modifiers\"]) > 0",
+      "expect": true
+    },
+    {
+      "name": "size compared against an int literal",
+      "source": "size(settings[\"modifiers\"]) >= 2",
+      "expect": true
+    },
+    {
+      "name": "size of a string",
+      "source": "size(settings[\"map\"]) == 6",
+      "expect": true
+    },
+    {
+      "name": "ternary",
+      "source": "settings[\"bots\"] ? size(settings[\"modifiers\"]) > 0 : true",
+      "expect": true
+    },
+    {
+      "name": "parentheses override precedence",
+      "source": "(settings[\"bots\"] || settings[\"friendly-fire\"]) && settings[\"map\"] == \"desert\"",
+      "expect": true
+    },
+    {
+      "name": "heterogeneous equality is false rather than an error",
+      "source": "settings[\"round-time\"] == \"hello\"",
+      "expect": false,
+      "rejectedBySubset": true
+    },
+    {
+      "name": "heterogeneous equality behind a conjunction",
+      "source": "settings[\"round-time\"] >= 60 && settings[\"round-time\"] == \"hello\"",
+      "expect": false,
+      "rejectedBySubset": true
+    },
+    {
+      "name": "unknown key is a runtime error",
+      "source": "settings[\"nope\"] == 1.0",
+      "error": true
+    }
+  ],
+  "validate": [
+    {
+      "name": "accepts a plain comparison",
+      "source": "settings[\"round-time\"] >= 60",
+      "valid": true
+    },
+    {
+      "name": "accepts size",
+      "source": "size(settings[\"modifiers\"]) > 0",
+      "valid": true
+    },
+    {
+      "name": "accepts a ternary",
+      "source": "settings[\"bots\"] ? settings[\"round-time\"] > 60 : true",
+      "valid": true
+    },
+    {
+      "name": "rejects a non boolean result",
+      "source": "settings[\"round-time\"]",
+      "valid": false
+    },
+    {
+      "name": "rejects a syntax error",
+      "source": "settings[\"map\"] ==",
+      "valid": false
+    },
+    {
+      "name": "rejects an undeclared setting",
+      "source": "settings[\"nope\"] == 1.0",
+      "valid": false
+    },
+    {
+      "name": "rejects a non literal index",
+      "source": "settings[settings[\"map\"]] == \"x\"",
+      "valid": false
+    },
+    {
+      "name": "rejects an unknown variable",
+      "source": "other[\"map\"] == \"x\"",
+      "valid": false
+    },
+    {
+      "name": "rejects field selection",
+      "source": "settings.map == \"desert\"",
+      "valid": false
+    },
+    {
+      "name": "rejects the matches method",
+      "source": "settings[\"map\"].matches(\"des.*\")",
+      "valid": false
+    },
+    {
+      "name": "rejects the contains method",
+      "source": "settings[\"map\"].contains(\"des\")",
+      "valid": false
+    },
+    {
+      "name": "rejects the exists macro",
+      "source": "settings[\"modifiers\"].exists(m, m == \"fast\")",
+      "valid": false
+    },
+    {
+      "name": "rejects the all macro",
+      "source": "settings[\"modifiers\"].all(m, m != \"\")",
+      "valid": false
+    },
+    {
+      "name": "rejects an int conversion",
+      "source": "int(settings[\"round-time\"]) == 120",
+      "valid": false
+    },
+    {
+      "name": "rejects a string conversion",
+      "source": "string(settings[\"round-time\"]) == \"120\"",
+      "valid": false
+    },
+    {
+      "name": "rejects a timestamp",
+      "source": "timestamp(\"2026-01-01T00:00:00Z\") > timestamp(\"2020-01-01T00:00:00Z\")",
+      "valid": false
+    },
+    {
+      "name": "rejects a list literal",
+      "source": "settings[\"map\"] in [\"desert\", \"forest\"]",
+      "valid": false
+    },
+    {
+      "name": "rejects a map literal",
+      "source": "{\"a\": 1}[\"a\"] == 1",
+      "valid": false
+    },
+    {
+      "name": "rejects comparing a number setting against a string literal",
+      "source": "settings[\"round-time\"] == \"hello\"",
+      "valid": false
+    },
+    {
+      "name": "rejects comparing a bool setting against a number literal",
+      "source": "settings[\"bots\"] == 1.0",
+      "valid": false
+    },
+    {
+      "name": "rejects comparing two settings of different types",
+      "source": "settings[\"round-time\"] == settings[\"map\"]",
+      "valid": false
+    },
+    {
+      "name": "rejects arithmetic on a string setting",
+      "source": "settings[\"map\"] + 1.0 > 2.0",
+      "valid": false
+    },
+    {
+      "name": "rejects membership against a single select",
+      "source": "\"fast\" in settings[\"map\"]",
+      "valid": false
+    },
+    {
+      "name": "accepts membership against a multi select",
+      "source": "\"fast\" in settings[\"modifiers\"]",
+      "valid": true
+    },
+    {
+      "name": "accepts comparing two settings of the same type",
+      "source": "settings[\"min-players\"] < settings[\"max-players\"]",
+      "valid": true
+    },
+    {
+      "name": "accepts a key containing a dot",
+      "source": "settings[\"server.name\"] == \"My server\"",
+      "valid": true
+    }
+  ]
+}

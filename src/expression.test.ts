@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { SettingValue } from "./protocol";
@@ -13,15 +13,16 @@ import type { SettingDeclaration } from "./settings";
 
 // The corpus is shared with the backend's cel-go implementation; running the
 // same cases on both sides is what keeps the two from drifting.
-// See specs/expressions/grammar.md.
-const corpus = JSON.parse(
-  readFileSync(
-    fileURLToPath(
-      new URL("../../../specs/expressions/cases.json", import.meta.url),
-    ),
-    "utf8",
-  ),
-) as {
+// See specs/expressions/grammar.md. This repository is mirrored without the
+// monorepo's specs/ folder, so the corpus is copied to test/expression-cases.json;
+// inside the monorepo a test below fails if the copy goes stale.
+const corpusPath = fileURLToPath(
+  new URL("../test/expression-cases.json", import.meta.url),
+);
+const specPath = fileURLToPath(
+  new URL("../../../specs/expressions/cases.json", import.meta.url),
+);
+const corpus = JSON.parse(readFileSync(corpusPath, "utf8")) as {
   environments: Record<string, Record<string, string>>;
   values: Record<string, Record<string, SettingValue>>;
   evaluate: {
@@ -34,6 +35,15 @@ const corpus = JSON.parse(
 };
 
 describe("corpus parity with the backend", () => {
+  it.skipIf(!existsSync(specPath))(
+    "uses the same corpus as specs/expressions/cases.json",
+    () => {
+      expect(readFileSync(corpusPath, "utf8")).toBe(
+        readFileSync(specPath, "utf8"),
+      );
+    },
+  );
+
   it("declares cases", () => {
     expect(corpus.evaluate.length).toBeGreaterThan(0);
   });

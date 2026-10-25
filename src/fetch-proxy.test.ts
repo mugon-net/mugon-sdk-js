@@ -276,7 +276,7 @@ describe("fetch shim over the proxy", () => {
       return new Response(
         new ReadableStream({
           pull(controller) {
-            controller.enqueue(bytesOf(16, 1));
+            controller.enqueue(bytesOf(MIB, 1));
           },
         }),
       );
