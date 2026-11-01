@@ -167,6 +167,7 @@ export interface ParentframeConnection {
 }
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 20_000;
+const MAX_PLAYER_NAME_LENGTH = 32;
 const MAX_NEXT_ROUND_SETTINGS = 256;
 const MAX_NEXT_ROUND_STRING_LENGTH = 4096;
 const MAX_NEXT_ROUND_SELECTIONS = 256;
@@ -188,6 +189,15 @@ function defer<Value>(): Deferred<Value> {
   });
   promise.catch(() => {});
   return { promise, resolve, reject };
+}
+
+// Names come from the platform, but a transport is pluggable, so what reaches
+// the game is bounded here.
+function clampPlayer(player: Player): Player {
+  return {
+    id: player.id,
+    name: player.name.slice(0, MAX_PLAYER_NAME_LENGTH),
+  };
 }
 
 function isSettingValue(value: unknown): value is SettingValue {
@@ -335,7 +345,8 @@ export class Parentframe {
             this.pendingData.push(message);
           }
         },
-        onPlayerConnected: (player) => {
+        onPlayerConnected: (connected) => {
+          const player = clampPlayer(connected);
           this.players.set(player.id, player);
           if (this.initialized)
             this.postToGame({ type: "player-connected", player });
@@ -351,7 +362,10 @@ export class Parentframe {
         this.options.transport.close();
         throw new NoServerAvailableError();
       }
-      this.identity = identity;
+      this.identity = {
+        self: clampPlayer(identity.self),
+        server: identity.server && clampPlayer(identity.server),
+      };
       this.options.onPhase?.("network-ready");
       this.maybeInit();
     } catch (error) {

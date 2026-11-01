@@ -167,7 +167,7 @@ function createHarness(
   };
 }
 
-const player = (id: string) => ({ id, name: id });
+const player = (id: string, name = id) => ({ id, name });
 
 const serverIdentity = { self: player("host-1") };
 
@@ -258,6 +258,55 @@ describe("handshake ordering", () => {
       deliveredBefore,
     );
     expect(secondContext.initialPlayers).toEqual([player("player-a")]);
+  });
+});
+
+describe("player names", () => {
+  it("carries names into init and into playerConnected", async () => {
+    const harness = createHarness();
+    active = harness.parentframe;
+    harness.transport.connection.resolve({
+      self: player("c1", "Cleo"),
+      server: player("s1", "Sam"),
+    });
+    harness.launch("client");
+    const context = await harness.startGame().context;
+
+    expect(context.self).toEqual({ id: "c1", name: "Cleo" });
+    expect(context.server).toEqual({ id: "s1", name: "Sam" });
+    expect(context.initialPlayers).toEqual([{ id: "s1", name: "Sam" }]);
+
+    const joined: { id: string; name: string }[] = [];
+    context.on("playerConnected", (connected) => joined.push(connected));
+    harness.transport.handlers.onPlayerConnected(player("p2", "Pat"));
+    await vi.waitFor(() => expect(joined).toEqual([{ id: "p2", name: "Pat" }]));
+  });
+
+  it("freezes the players it hands the game", async () => {
+    const harness = createHarness();
+    active = harness.parentframe;
+    harness.transport.connection.resolve(serverIdentity);
+    harness.launch();
+    const context = await harness.startGame().context;
+
+    expect(Object.isFrozen(context.self)).toBe(true);
+    expect(Object.isFrozen(context.initialPlayers)).toBe(true);
+  });
+
+  it("cuts names to 32 characters", async () => {
+    const harness = createHarness();
+    active = harness.parentframe;
+    harness.transport.connection.resolve({
+      self: player("host-1", "h".repeat(100)),
+    });
+    harness.launch();
+    const context = await harness.startGame().context;
+    harness.transport.handlers.onPlayerConnected(player("p2", "x".repeat(40)));
+    const joined: string[] = [];
+    context.on("playerConnected", (connected) => joined.push(connected.name));
+
+    expect(context.self.name).toHaveLength(32);
+    await vi.waitFor(() => expect(joined).toEqual(["x".repeat(32)]));
   });
 });
 
