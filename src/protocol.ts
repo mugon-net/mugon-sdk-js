@@ -1,5 +1,5 @@
 // The four delivery guarantees a message can be sent with. The transport
-// establishes one data channel per combination between each peer and the
+// establishes one data channel per combination between each player and the
 // server; the game chooses per message which one to use.
 //
 // The numeric values are the channel index shared across the SDK, the
@@ -14,7 +14,15 @@ export type Channel = (typeof Channel)[keyof typeof Channel];
 
 export const CHANNEL_COUNT = 4;
 
-export type NetworkMode = "server" | "client";
+// The part a player takes in the game's network.
+export type NetworkRole = "server" | "client";
+
+// A participant in the game. The name is the player's display name, supplied
+// by the platform; it is not unique, so games identify players by `id`.
+export interface Player {
+  id: string;
+  name: string;
+}
 
 // A setting value as the game receives it, carrying the type the setting was
 // declared with.
@@ -35,11 +43,11 @@ export type ToGameframeFetchPortMessage = { type: "fetch-port" };
 // Carries the control port; once received the game may start.
 export type ToGameframeInitMessage = {
   type: "init";
-  role: NetworkMode;
-  ownId: string;
-  serverId: string;
+  role: NetworkRole;
+  self: Player;
+  server: Player;
   settings: Record<string, SettingValue>;
-  initialPeers: string[];
+  initialPlayers: Player[];
 };
 export type ToGameframeRejectMessage = { type: "reject"; reason: string };
 export type ToGameframeWindowMessage =
@@ -49,51 +57,60 @@ export type ToGameframeWindowMessage =
 
 // --- gameframe -> parentframe, via the control port ---
 
-export type FromGameframeDataMessage = {
-  type: "msg";
-  toclientid: string;
+export type FromGameframeSendMessage = {
+  type: "send";
+  toPlayerId: string;
   channel: Channel;
   data: Uint8Array;
 };
-export type FromGameframeDroppedMessage = { type: "drp"; clientid: string };
+export type FromGameframeDisconnectPlayerMessage = {
+  type: "disconnect-player";
+  playerId: string;
+};
 // Asks the host page to show its join QR code / invite link.
-export type FromGameframeShowInviteMessage = { type: "showinvite" };
+export type FromGameframeShowInviteMessage = { type: "show-invite" };
 export type FromGameframeProgressMessage = {
   type: "progress";
   fraction?: number;
   label?: string;
 };
-export type FromGameframeDoneMessage = { type: "done" };
+export type FromGameframeProgressDoneMessage = { type: "progress-done" };
 // Asks the host page to send everyone back to the lobby; honoured for the host only.
-export type FromGameframeEndGameMessage = { type: "endgame" };
+export type FromGameframeEndGameMessage = { type: "end-game" };
 // Asks the host page to start the next round with these settings, which replace
 // the lobby's complete set; the host confirms first. Honoured for the host only.
-export type FromGameframeNextGameMessage = {
-  type: "nextgame";
+export type FromGameframeNextRoundMessage = {
+  type: "next-round";
   settings: Record<string, SettingValue>;
 };
 export type FromGameframeMessage =
-  | FromGameframeDataMessage
-  | FromGameframeDroppedMessage
+  | FromGameframeSendMessage
+  | FromGameframeDisconnectPlayerMessage
   | FromGameframeShowInviteMessage
   | FromGameframeProgressMessage
-  | FromGameframeDoneMessage
+  | FromGameframeProgressDoneMessage
   | FromGameframeEndGameMessage
-  | FromGameframeNextGameMessage;
+  | FromGameframeNextRoundMessage;
 
 // --- parentframe -> gameframe, via the control port ---
 
-export type ToGameframeConnectedMessage = { type: "con"; clientid: string };
-export type ToGameframeDisconnectedMessage = { type: "dc"; clientid: string };
+export type ToGameframePlayerConnectedMessage = {
+  type: "player-connected";
+  player: Player;
+};
+export type ToGameframePlayerDisconnectedMessage = {
+  type: "player-disconnected";
+  playerId: string;
+};
 export type ToGameframeDataMessage = {
-  type: "msg";
-  fromclientid: string;
+  type: "message";
+  fromPlayerId: string;
   channel: Channel;
   data: Uint8Array;
 };
 export type ToGameframeMessage =
-  | ToGameframeConnectedMessage
-  | ToGameframeDisconnectedMessage
+  | ToGameframePlayerConnectedMessage
+  | ToGameframePlayerDisconnectedMessage
   | ToGameframeDataMessage;
 
 // --- fetch port (transferred with `fetch-port`), gameframe -> parentframe ---

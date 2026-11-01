@@ -2,6 +2,6 @@ import { start } from "./gameframe";
 
 export type { MugonContext, MugonEvents, MugonMessage } from "./gameframe";
 export { Channel } from "./protocol";
-export type { NetworkMode, SettingValue } from "./protocol";
+export type { NetworkRole, Player, SettingValue } from "./protocol";
 
 export const Mugon = { start };

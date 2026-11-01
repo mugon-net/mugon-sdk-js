@@ -6,7 +6,7 @@ A game runs in a sandboxed iframe on the platform's page (the _parentframe_). Th
 two halves:
 
 - **The game side** (`@mugon/sdk`, `mugon.iife.js`): `Mugon.start`, which hands your game its
-  context (role, ids, initial peers, messaging, loading progress) and serves its files through the
+  context (role, players, messaging, loading progress) and serves its files through the
   platform so large downloads are cached.
 - **The parentframe side** (`@mugon/sdk/parentframe`): what the platform and the `mugon` CLI's
   dev server use to host a game. Game developers don't need it.
@@ -18,9 +18,9 @@ two halves:
 import { Mugon } from "@mugon/sdk";
 
 Mugon.start(async (ctx) => {
-  console.log(`running as ${ctx.role} with id ${ctx.ownId}`);
+  console.log(`running as ${ctx.role} as ${ctx.self.name} (${ctx.self.id})`);
 
-  ctx.on("connect", (peerId) => console.log("peer connected", peerId));
+  ctx.on("playerConnected", (player) => console.log("joined:", player.name));
   ctx.on("message", ({ from, data }) => console.log(from, data.byteLength));
 
   // ...create your game, then tell the platform it is playable:
@@ -31,8 +31,8 @@ Mugon.start(async (ctx) => {
 Without a bundler, load `dist/mugon.iife.js` as the **first** `<script>` of your `index.html`; it
 defines a global `Mugon` (`Mugon.start`, `Mugon.Channel`).
 
-The context (`ctx`) offers `role`, `ownId`, `serverId`, `initialPeers`, `settings`, `send`, `drop`, `on`,
-`showInvite`, `toggleFullscreen` and `progress.set`/`progress.done`. It is also published as
+The context (`ctx`) offers `role`, `self`, `server`, `initialPlayers`, `settings`, `send`, `disconnectPlayer`, `on`,
+`showInvite`, `endGame`, `requestNextRound`, `toggleFullscreen` and `progress.set`/`progress.done`. It is also published as
 `window.mugon` for code that can't be handed it, such as a wasm module.
 
 `ctx.settings` holds the values the lobby chose for the settings the game version declares in

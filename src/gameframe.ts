@@ -2,7 +2,8 @@ import {
   Channel,
   FromGameframeMessage,
   FromGameframeWindowMessage,
-  NetworkMode,
+  NetworkRole,
+  Player,
   SettingValue,
   ToGameframeInitMessage,
   ToGameframeMessage,
@@ -19,21 +20,22 @@ declare global {
 }
 
 export interface MugonMessage {
+  // The id of the player that sent it.
   from: string;
   channel: Channel;
   data: Uint8Array;
 }
 
 export interface MugonEvents {
-  connect: (peerId: string) => void;
-  disconnect: (peerId: string) => void;
+  playerConnected: (player: Player) => void;
+  playerDisconnected: (playerId: string) => void;
   message: (message: MugonMessage) => void;
 }
 
 export interface MugonContext {
-  readonly role: NetworkMode;
-  readonly ownId: string;
-  readonly serverId: string;
+  readonly role: NetworkRole;
+  readonly self: Player;
+  readonly server: Player;
   readonly settings: Readonly<Record<string, SettingValue>>;
   // Typed reads; each returns undefined when the setting is absent or declared
   // with another type. A single-choice select reads as a one-element list.
@@ -42,9 +44,9 @@ export interface MugonContext {
   getNumber(key: string): number | undefined;
   getStrings(key: string): string[] | undefined;
   // Snapshot at init; later changes arrive through `on`.
-  readonly initialPeers: readonly string[];
-  send(peerId: string, data: Uint8Array, channel?: Channel): void;
-  drop(peerId: string): void;
+  readonly initialPlayers: readonly Player[];
+  send(playerId: string, data: Uint8Array, channel?: Channel): void;
+  disconnectPlayer(playerId: string): void;
   // Events that arrive while no handler is registered for them are queued and
   // delivered to the first handler that subscribes.
   on<Event extends keyof MugonEvents>(
@@ -58,7 +60,7 @@ export interface MugonContext {
   // must be the complete set (edit `ctx.settings` and pass it back); settings
   // left out fall back to their defaults. The host confirms before anything
   // happens, and settings the game version rejects end the game instead.
-  nextGame(settings: Record<string, SettingValue>): void;
+  requestNextRound(settings: Record<string, SettingValue>): void;
   toggleFullscreen(): void;
   progress: {
     set(fraction: number, label?: string): void;
@@ -99,15 +101,15 @@ export function createGameframeRuntime(env: GameframeEnv) {
   contextPromise.catch(() => {});
 
   const handlers: { [Event in keyof MugonEvents]: Set<MugonEvents[Event]> } = {
-    connect: new Set(),
-    disconnect: new Set(),
+    playerConnected: new Set(),
+    playerDisconnected: new Set(),
     message: new Set(),
   };
   const queued: {
     [Event in keyof MugonEvents]: Parameters<MugonEvents[Event]>[0][];
   } = {
-    connect: [],
-    disconnect: [],
+    playerConnected: [],
+    playerDisconnected: [],
     message: [],
   };
 
@@ -134,15 +136,15 @@ export function createGameframeRuntime(env: GameframeEnv) {
   function handleControlMessage(event: MessageEvent) {
     const message = event.data as ToGameframeMessage | undefined;
     switch (message?.type) {
-      case "con":
-        emit("connect", message.clientid);
+      case "player-connected":
+        emit("playerConnected", message.player);
         break;
-      case "dc":
-        emit("disconnect", message.clientid);
+      case "player-disconnected":
+        emit("playerDisconnected", message.playerId);
         break;
-      case "msg":
+      case "message":
         emit("message", {
-          from: message.fromclientid,
+          from: message.fromPlayerId,
           channel: message.channel,
           data: message.data,
         });
@@ -154,8 +156,8 @@ export function createGameframeRuntime(env: GameframeEnv) {
     const settings = Object.freeze({ ...init.settings });
     return Object.freeze<MugonContext>({
       role: init.role,
-      ownId: init.ownId,
-      serverId: init.serverId,
+      self: Object.freeze({ ...init.self }),
+      server: Object.freeze({ ...init.server }),
       settings,
       getString: (key) => {
         const value = settings[key];
@@ -175,14 +177,16 @@ export function createGameframeRuntime(env: GameframeEnv) {
         if (Array.isArray(value)) return [...value];
         return typeof value === "string" ? [value] : undefined;
       },
-      initialPeers: Object.freeze([...init.initialPeers]),
-      send(peerId, data, channel = Channel.ReliableOrdered) {
-        sendToParent({ type: "msg", toclientid: peerId, channel, data }, [
+      initialPlayers: Object.freeze(
+        init.initialPlayers.map((player) => Object.freeze({ ...player })),
+      ),
+      send(playerId, data, channel = Channel.ReliableOrdered) {
+        sendToParent({ type: "send", toPlayerId: playerId, channel, data }, [
           data.buffer,
         ]);
       },
-      drop(peerId) {
-        sendToParent({ type: "drp", clientid: peerId });
+      disconnectPlayer(playerId) {
+        sendToParent({ type: "disconnect-player", playerId });
       },
       on(event, handler) {
         const set = handlers[event] as Set<typeof handler>;
@@ -195,21 +199,23 @@ export function createGameframeRuntime(env: GameframeEnv) {
         };
       },
       showInvite() {
-        sendToParent({ type: "showinvite" });
+        sendToParent({ type: "show-invite" });
       },
       endGame() {
         if (init.role !== "server") {
           console.warn("Mugon: endGame() is only available to the host");
           return;
         }
-        sendToParent({ type: "endgame" });
+        sendToParent({ type: "end-game" });
       },
-      nextGame(nextSettings) {
+      requestNextRound(nextSettings) {
         if (init.role !== "server") {
-          console.warn("Mugon: nextGame() is only available to the host");
+          console.warn(
+            "Mugon: requestNextRound() is only available to the host",
+          );
           return;
         }
-        sendToParent({ type: "nextgame", settings: nextSettings });
+        sendToParent({ type: "next-round", settings: nextSettings });
       },
       toggleFullscreen: () => env.toggleFullscreen(),
       progress: {
@@ -217,7 +223,7 @@ export function createGameframeRuntime(env: GameframeEnv) {
           sendToParent({ type: "progress", fraction, label });
         },
         done() {
-          sendToParent({ type: "done" });
+          sendToParent({ type: "progress-done" });
         },
       },
     });

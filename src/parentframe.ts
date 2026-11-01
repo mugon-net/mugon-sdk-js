@@ -2,7 +2,8 @@ import {
   Channel,
   FromGameframeMessage,
   FromGameframeWindowMessage,
-  NetworkMode,
+  NetworkRole,
+  Player,
   ToGameframeDataMessage,
   ToGameframeInitMessage,
   ToGameframeMessage,
@@ -20,38 +21,38 @@ export type {
 } from "./version-file-fetcher";
 export type { FetchVersionFile, VersionFileRequest } from "./fetch-proxy";
 
-export type { NetworkMode } from "./protocol";
+export type { NetworkRole, Player } from "./protocol";
 export { major as sdkMajor } from "./version";
 
-// The identity a transport assigns this peer once connected.
+// The identity a transport assigns this player once connected.
 export interface TransportIdentity {
-  clientId: string;
-  // The server peer's id, present when this peer connected as a client.
-  serverId?: string;
+  self: Player;
+  // The server player, present when this player connected as a client.
+  server?: Player;
 }
 
 // The events a transport delivers to the parentframe; the parentframe forwards
 // each of them to the gameframe.
 export interface TransportHandlers {
-  onData(peerId: string, channel: Channel, data: Uint8Array): void;
-  onPeerConnected(peerId: string): void;
-  onPeerDisconnected(peerId: string): void;
+  onData(playerId: string, channel: Channel, data: Uint8Array): void;
+  onPlayerConnected(player: Player): void;
+  onPlayerDisconnected(playerId: string): void;
 }
 
-// A ParentframeTransport moves data between this peer and the others. The
+// A ParentframeTransport moves data between this player and the others. The
 // parentframe stays transport-agnostic: the dev CLI supplies a transport backed
 // by a local relay, the production frontend supplies its own.
 export interface ParentframeTransport {
   connect(
-    mode: NetworkMode,
+    role: NetworkRole,
     handlers: TransportHandlers,
   ): Promise<TransportIdentity>;
-  send(peerId: string, channel: Channel, data: Uint8Array): void;
-  drop(peerId: string): void;
+  send(playerId: string, channel: Channel, data: Uint8Array): void;
+  disconnectPlayer(playerId: string): void;
   close(): void;
 }
 
-// Thrown when a client can't find a server peer yet, so the caller can surface
+// Thrown when a client can't find the server yet, so the caller can surface
 // a distinct message.
 export class NoServerAvailableError extends Error {
   constructor() {
@@ -136,7 +137,7 @@ export interface ParentframeOptions {
   onEndGameRequest?: () => void;
   // Called when the host's game asks for a next round; `settings` is the
   // game's complete, shape-checked set. Never called for a client.
-  onNextGameRequest?: (settings: Record<string, SettingValue>) => void;
+  onNextRoundRequest?: (settings: Record<string, SettingValue>) => void;
   // How long to wait for the game's `hello` before giving up.
   handshakeTimeoutMs?: number;
   // Where the window `message` events arrive; defaults to `window`.
@@ -145,7 +146,7 @@ export interface ParentframeOptions {
 
 export type LaunchOptions = {
   src: string;
-  mode: NetworkMode;
+  role: NetworkRole;
   settings?: Record<string, SettingValue>;
   // Size of all the game's files; enables the byte-based progress estimate.
   totalBytes?: number;
@@ -159,16 +160,16 @@ export type LaunchOptions = {
 );
 
 export interface ParentframeConnection {
-  mode: NetworkMode;
-  clientId: string;
-  serverId: string;
+  role: NetworkRole;
+  self: Player;
+  server: Player;
   close(): void;
 }
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 20_000;
-const MAX_NEXT_GAME_SETTINGS = 256;
-const MAX_NEXT_GAME_STRING_LENGTH = 4096;
-const MAX_NEXT_GAME_SELECTIONS = 256;
+const MAX_NEXT_ROUND_SETTINGS = 256;
+const MAX_NEXT_ROUND_STRING_LENGTH = 4096;
+const MAX_NEXT_ROUND_SELECTIONS = 256;
 const PROGRESS_INTERVAL_MS = 100;
 const MAX_ESTIMATED_FRACTION = 0.99;
 
@@ -193,29 +194,29 @@ function isSettingValue(value: unknown): value is SettingValue {
   if (typeof value === "boolean") return true;
   if (typeof value === "number") return Number.isFinite(value);
   if (typeof value === "string")
-    return value.length <= MAX_NEXT_GAME_STRING_LENGTH;
+    return value.length <= MAX_NEXT_ROUND_STRING_LENGTH;
   return (
     Array.isArray(value) &&
-    value.length <= MAX_NEXT_GAME_SELECTIONS &&
+    value.length <= MAX_NEXT_ROUND_SELECTIONS &&
     value.every(
       (entry) =>
         typeof entry === "string" &&
-        entry.length <= MAX_NEXT_GAME_STRING_LENGTH,
+        entry.length <= MAX_NEXT_ROUND_STRING_LENGTH,
     )
   );
 }
 
-// The game is untrusted, so what it sends for `nextGame` is checked before it
+// The game is untrusted, so what it sends for `next-round` is checked before it
 // goes anywhere near the platform; the platform validates the values themselves.
-function parseNextGameSettings(
+function parseNextRoundSettings(
   raw: unknown,
 ): Record<string, SettingValue> | undefined {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return;
   const entries = Object.entries(raw);
-  if (entries.length > MAX_NEXT_GAME_SETTINGS) return;
+  if (entries.length > MAX_NEXT_ROUND_SETTINGS) return;
   const settings: Record<string, SettingValue> = {};
   for (const [key, value] of entries) {
-    if (key.length > MAX_NEXT_GAME_STRING_LENGTH || !isSettingValue(value))
+    if (key.length > MAX_NEXT_ROUND_STRING_LENGTH || !isSettingValue(value))
       return;
     settings[key] = value;
   }
@@ -244,7 +245,7 @@ export class Parentframe {
   private initialized = false;
 
   private identity?: TransportIdentity;
-  private readonly peers = new Set<string>();
+  private readonly players = new Map<string, Player>();
   private pendingData: ToGameframeDataMessage[] = [];
   private connection = defer<ParentframeConnection>();
 
@@ -301,7 +302,7 @@ export class Parentframe {
     if (this.initialized) throw new Error("the game was already initialized");
     this.connection = defer();
     this.identity = undefined;
-    this.peers.clear();
+    this.players.clear();
     this.pendingData = [];
     void this.startNetwork();
     return this.connection.promise;
@@ -318,13 +319,13 @@ export class Parentframe {
   }
 
   private async startNetwork() {
-    const { mode } = this.launchOptions!;
+    const { role } = this.launchOptions!;
     try {
-      const identity = await this.options.transport.connect(mode, {
-        onData: (peerId, channel, data) => {
+      const identity = await this.options.transport.connect(role, {
+        onData: (playerId, channel, data) => {
           const message: ToGameframeDataMessage = {
-            type: "msg",
-            fromclientid: peerId,
+            type: "message",
+            fromPlayerId: playerId,
             channel,
             data,
           };
@@ -334,19 +335,19 @@ export class Parentframe {
             this.pendingData.push(message);
           }
         },
-        onPeerConnected: (peerId) => {
-          this.peers.add(peerId);
+        onPlayerConnected: (player) => {
+          this.players.set(player.id, player);
           if (this.initialized)
-            this.postToGame({ type: "con", clientid: peerId });
+            this.postToGame({ type: "player-connected", player });
         },
-        onPeerDisconnected: (peerId) => {
-          this.peers.delete(peerId);
+        onPlayerDisconnected: (playerId) => {
+          this.players.delete(playerId);
           if (this.initialized)
-            this.postToGame({ type: "dc", clientid: peerId });
+            this.postToGame({ type: "player-disconnected", playerId });
         },
       });
       if (this.destroyed) return;
-      if (mode === "client" && !identity.serverId) {
+      if (role === "client" && !identity.server) {
         this.options.transport.close();
         throw new NoServerAvailableError();
       }
@@ -397,23 +398,23 @@ export class Parentframe {
 
   private maybeInit() {
     if (!this.helloReceived || !this.identity || this.initialized) return;
-    const { mode, settings } = this.launchOptions!;
+    const { role, settings } = this.launchOptions!;
     const identity = this.identity;
 
     const channel = new MessageChannel();
     this.controlPort = channel.port1;
     channel.port1.onmessage = (event) => this.handleGameMessage(event.data);
-    const serverId = mode === "server" ? identity.clientId : identity.serverId!;
-    // A client always has its server among its peers, whether or not the
+    const server = role === "server" ? identity.self : identity.server!;
+    // A client always has its server among its players, whether or not the
     // transport reported it as connected on its own.
-    if (mode === "client") this.peers.add(serverId);
+    if (role === "client") this.players.set(server.id, server);
     const init: ToGameframeInitMessage = {
       type: "init",
-      role: mode,
-      ownId: identity.clientId,
-      serverId,
+      role,
+      self: identity.self,
+      server,
       settings: settings ?? {},
-      initialPeers: [...this.peers],
+      initialPlayers: [...this.players.values()],
     };
     this.postToWindow(init, [channel.port2]);
     this.initialized = true;
@@ -422,36 +423,36 @@ export class Parentframe {
     }
     this.options.onPhase?.("running");
     this.connection.resolve({
-      mode,
-      clientId: identity.clientId,
-      serverId: init.serverId,
+      role,
+      self: identity.self,
+      server,
       close: () => this.options.transport.close(),
     });
   }
 
   private handleGameMessage(message: FromGameframeMessage | undefined) {
     switch (message?.type) {
-      case "msg":
+      case "send":
         this.options.transport.send(
-          message.toclientid,
+          message.toPlayerId,
           message.channel,
           message.data,
         );
         break;
-      case "drp":
-        this.options.transport.drop(message.clientid);
+      case "disconnect-player":
+        this.options.transport.disconnectPlayer(message.playerId);
         break;
-      case "showinvite":
+      case "show-invite":
         this.options.onShowInviteRequest?.();
         break;
-      case "endgame":
-        if (this.launchOptions?.mode === "server")
+      case "end-game":
+        if (this.launchOptions?.role === "server")
           this.options.onEndGameRequest?.();
         break;
-      case "nextgame": {
-        if (this.launchOptions?.mode !== "server") break;
-        const settings = parseNextGameSettings(message.settings);
-        if (settings) this.options.onNextGameRequest?.(settings);
+      case "next-round": {
+        if (this.launchOptions?.role !== "server") break;
+        const settings = parseNextRoundSettings(message.settings);
+        if (settings) this.options.onNextRoundRequest?.(settings);
         break;
       }
       case "progress":
@@ -466,7 +467,7 @@ export class Parentframe {
         }
         this.reportProgress(false);
         break;
-      case "done":
+      case "progress-done":
         this.reportProgress(true);
         break;
     }
