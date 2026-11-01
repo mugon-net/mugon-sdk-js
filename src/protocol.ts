@@ -14,6 +14,9 @@ export type Channel = (typeof Channel)[keyof typeof Channel];
 
 export const CHANNEL_COUNT = 4;
 
+// The most a game may hand to its next round, in UTF-8 bytes.
+export const MAX_CARRY_OVER_BYTES = 1024 * 1024;
+
 // The part a player takes in the game's network.
 export type NetworkRole = "server" | "client";
 
@@ -48,6 +51,8 @@ export type ToGameframeInitMessage = {
   server: Player;
   settings: Record<string, SettingValue>;
   initialPlayers: Player[];
+  // What the previous round's host game handed over; only ever set for the host.
+  carryOver?: string;
 };
 export type ToGameframeRejectMessage = { type: "reject"; reason: string };
 export type ToGameframeWindowMessage =
@@ -79,9 +84,11 @@ export type FromGameframeProgressDoneMessage = { type: "progress-done" };
 export type FromGameframeEndGameMessage = { type: "end-game" };
 // Asks the host page to start the next round with these settings, which replace
 // the lobby's complete set; the host confirms first. Honoured for the host only.
+// `carryOver` is any string for the host's game in the next round.
 export type FromGameframeNextRoundMessage = {
   type: "next-round";
   settings: Record<string, SettingValue>;
+  carryOver?: string;
 };
 export type FromGameframeMessage =
   | FromGameframeSendMessage

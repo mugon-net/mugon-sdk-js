@@ -3,6 +3,7 @@ import {
   FromGameframeMessage,
   FromGameframeWindowMessage,
   NetworkRole,
+  MAX_CARRY_OVER_BYTES,
   Player,
   SettingValue,
   ToGameframeInitMessage,
@@ -37,6 +38,9 @@ export interface MugonContext {
   readonly self: Player;
   readonly server: Player;
   readonly settings: Readonly<Record<string, SettingValue>>;
+  // What the previous round handed over through `requestNextRound`. Only the
+  // host receives it, and only in the round right after; otherwise undefined.
+  readonly carryOver: string | undefined;
   // Typed reads; each returns undefined when the setting is absent or declared
   // with another type. A single-choice select reads as a one-element list.
   getString(key: string): string | undefined;
@@ -60,7 +64,12 @@ export interface MugonContext {
   // must be the complete set (edit `ctx.settings` and pass it back); settings
   // left out fall back to their defaults. The host confirms before anything
   // happens, and settings the game version rejects end the game instead.
-  requestNextRound(settings: Record<string, SettingValue>): void;
+  // `carryOver` is any string (up to 1 MiB) the next round's `ctx.carryOver`
+  // returns. It is not secret: treat it like any untrusted input.
+  requestNextRound(
+    settings: Record<string, SettingValue>,
+    options?: { carryOver?: string },
+  ): void;
   toggleFullscreen(): void;
   progress: {
     set(fraction: number, label?: string): void;
@@ -159,6 +168,7 @@ export function createGameframeRuntime(env: GameframeEnv) {
       self: Object.freeze({ ...init.self }),
       server: Object.freeze({ ...init.server }),
       settings,
+      carryOver: init.carryOver,
       getString: (key) => {
         const value = settings[key];
         if (value === undefined) return undefined;
@@ -208,14 +218,24 @@ export function createGameframeRuntime(env: GameframeEnv) {
         }
         sendToParent({ type: "end-game" });
       },
-      requestNextRound(nextSettings) {
+      requestNextRound(nextSettings, options = {}) {
         if (init.role !== "server") {
           console.warn(
             "Mugon: requestNextRound() is only available to the host",
           );
           return;
         }
-        sendToParent({ type: "next-round", settings: nextSettings });
+        const { carryOver } = options;
+        if (
+          carryOver !== undefined &&
+          new TextEncoder().encode(carryOver).length > MAX_CARRY_OVER_BYTES
+        ) {
+          console.warn(
+            `Mugon: requestNextRound() dropped: carryOver is over ${MAX_CARRY_OVER_BYTES} bytes`,
+          );
+          return;
+        }
+        sendToParent({ type: "next-round", settings: nextSettings, carryOver });
       },
       toggleFullscreen: () => env.toggleFullscreen(),
       progress: {

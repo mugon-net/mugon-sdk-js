@@ -3,6 +3,7 @@ import {
   FromGameframeMessage,
   FromGameframeWindowMessage,
   NetworkRole,
+  MAX_CARRY_OVER_BYTES,
   Player,
   ToGameframeDataMessage,
   ToGameframeInitMessage,
@@ -137,7 +138,10 @@ export interface ParentframeOptions {
   onEndGameRequest?: () => void;
   // Called when the host's game asks for a next round; `settings` is the
   // game's complete, shape-checked set. Never called for a client.
-  onNextRoundRequest?: (settings: Record<string, SettingValue>) => void;
+  onNextRoundRequest?: (
+    settings: Record<string, SettingValue>,
+    carryOver?: string,
+  ) => void;
   // How long to wait for the game's `hello` before giving up.
   handshakeTimeoutMs?: number;
   // Where the window `message` events arrive; defaults to `window`.
@@ -148,6 +152,8 @@ export type LaunchOptions = {
   src: string;
   role: NetworkRole;
   settings?: Record<string, SettingValue>;
+  // What the previous round handed over; given to the game as `ctx.carryOver`.
+  carryOver?: string;
   // Size of all the game's files; enables the byte-based progress estimate.
   totalBytes?: number;
   // The SDK major the game version is recorded with; defaults to this
@@ -231,6 +237,15 @@ function parseNextRoundSettings(
     settings[key] = value;
   }
   return settings;
+}
+
+// `null` means the value is invalid, `undefined` that the game sent none.
+function parseCarryOver(raw: unknown): string | undefined | null {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string") return null;
+  return new TextEncoder().encode(raw).length > MAX_CARRY_OVER_BYTES
+    ? null
+    : raw;
 }
 
 // Parentframe bridges the host page and the embedded gameframe: it hands the
@@ -412,7 +427,7 @@ export class Parentframe {
 
   private maybeInit() {
     if (!this.helloReceived || !this.identity || this.initialized) return;
-    const { role, settings } = this.launchOptions!;
+    const { role, settings, carryOver } = this.launchOptions!;
     const identity = this.identity;
 
     const channel = new MessageChannel();
@@ -429,6 +444,7 @@ export class Parentframe {
       server,
       settings: settings ?? {},
       initialPlayers: [...this.players.values()],
+      carryOver: role === "server" ? carryOver : undefined,
     };
     this.postToWindow(init, [channel.port2]);
     this.initialized = true;
@@ -466,7 +482,10 @@ export class Parentframe {
       case "next-round": {
         if (this.launchOptions?.role !== "server") break;
         const settings = parseNextRoundSettings(message.settings);
-        if (settings) this.options.onNextRoundRequest?.(settings);
+        if (!settings) break;
+        const carryOver = parseCarryOver(message.carryOver);
+        if (carryOver === null) break;
+        this.options.onNextRoundRequest?.(settings, carryOver);
         break;
       }
       case "progress":

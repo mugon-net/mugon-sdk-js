@@ -105,6 +105,7 @@ function createHarness(
     showInvite: 0,
     endGame: 0,
     nextRound: [] as Record<string, unknown>[],
+    nextRoundCarryOver: [] as (string | undefined)[],
   };
   const parentframe = new Parentframe({
     transport,
@@ -114,7 +115,10 @@ function createHarness(
     onProgress: (progress) => events.progress.push(progress),
     onShowInviteRequest: () => events.showInvite++,
     onEndGameRequest: () => events.endGame++,
-    onNextRoundRequest: (settings) => events.nextRound.push(settings),
+    onNextRoundRequest: (settings, carryOver) => {
+      events.nextRound.push(settings);
+      events.nextRoundCarryOver.push(carryOver);
+    },
     handshakeTimeoutMs: 1000,
   });
 
@@ -123,6 +127,7 @@ function createHarness(
     expectedMajor?: number,
     settings?: Record<string, string>,
     totalBytes?: number,
+    carryOver?: string,
   ) {
     return parentframe.launch({
       src: "about:blank",
@@ -130,6 +135,7 @@ function createHarness(
       expectedMajor,
       settings,
       totalBytes,
+      carryOver,
       iframeFactory: () => ({ contentWindow: childWindow }),
     });
   }
@@ -643,6 +649,63 @@ describe("game to parent", () => {
 
     await vi.waitFor(() => expect(harness.events.nextRound).toHaveLength(1));
     expect(harness.events.nextRound).toEqual([{ ok: 1 }]);
+  });
+
+  it("hands the carry-over string to the platform", async () => {
+    const harness = createHarness();
+    active = harness.parentframe;
+    harness.transport.connection.resolve(serverIdentity);
+    harness.launch();
+    const context = await harness.startGame().context;
+
+    const handedOver = `{"score":7,"name":"${"é".repeat(10)}"}`;
+    context.requestNextRound({ a: 1 }, { carryOver: handedOver });
+    context.requestNextRound({ a: 2 });
+
+    await vi.waitFor(() => expect(harness.events.nextRound).toHaveLength(2));
+    expect(harness.events.nextRoundCarryOver).toEqual([handedOver, undefined]);
+  });
+
+  it("drops a carry-over string over 1 MiB, counted in bytes", async () => {
+    const harness = createHarness();
+    active = harness.parentframe;
+    harness.transport.connection.resolve(serverIdentity);
+    harness.launch();
+    const context = await harness.startGame().context;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const limit = 1024 * 1024;
+    context.requestNextRound({ a: 1 }, { carryOver: "x".repeat(limit + 1) });
+    context.requestNextRound({ a: 2 }, { carryOver: "é".repeat(limit / 2 + 1) });
+    context.requestNextRound({ a: 3 }, { carryOver: "x".repeat(limit) });
+
+    await vi.waitFor(() => expect(harness.events.nextRound).toHaveLength(1));
+    expect(harness.events.nextRound).toEqual([{ a: 3 }]);
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
+  it("gives the carry-over to the host's game only", async () => {
+    const host = createHarness();
+    active = host.parentframe;
+    host.transport.connection.resolve(serverIdentity);
+    host.launch("server", undefined, undefined, undefined, "from last round");
+    expect((await host.startGame().context).carryOver).toBe("from last round");
+
+    const client = createHarness();
+    client.transport.connection.resolve({ self: player("c1"), server: player("s1") });
+    client.launch("client", undefined, undefined, undefined, "from last round");
+    const clientContext = await client.startGame().context;
+    expect(clientContext.carryOver).toBeUndefined();
+    client.parentframe.destroy();
+  });
+
+  it("starts without a carry-over by default", async () => {
+    const harness = createHarness();
+    active = harness.parentframe;
+    harness.transport.connection.resolve(serverIdentity);
+    harness.launch();
+    expect((await harness.startGame().context).carryOver).toBeUndefined();
   });
 
   it("reports done when the start callback resolves", async () => {
