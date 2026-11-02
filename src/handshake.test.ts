@@ -216,7 +216,10 @@ describe("handshake ordering", () => {
   it("inits immediately when the network is ready before hello", async () => {
     const harness = createHarness();
     active = harness.parentframe;
-    harness.transport.connection.resolve({ self: player("c1"), server: player("s1") });
+    harness.transport.connection.resolve({
+      self: player("c1"),
+      server: player("s1"),
+    });
     const launched = harness.launch("client", undefined, { colour: "red" });
     await vi.waitFor(() =>
       expect(harness.events.phases).toContain("network-ready"),
@@ -392,7 +395,10 @@ describe("context handoff", () => {
   it("puts the server among a client's players even if the transport never reported it", async () => {
     const harness = createHarness();
     active = harness.parentframe;
-    harness.transport.connection.resolve({ self: player("c1"), server: player("s1") });
+    harness.transport.connection.resolve({
+      self: player("c1"),
+      server: player("s1"),
+    });
     harness.launch("client");
     const context = await harness.startGame().context;
     expect(context.initialPlayers).toEqual([player("s1")]);
@@ -444,7 +450,10 @@ describe("failures", () => {
 
     harness.transport.connection = defer();
     const retried = harness.parentframe.retryNetwork();
-    harness.transport.connection.resolve({ self: player("c1"), server: player("s1") });
+    harness.transport.connection.resolve({
+      self: player("c1"),
+      server: player("s1"),
+    });
     await retried;
     expect((await game.context).server).toEqual(player("s1"));
     expect(harness.transport.connectCalls).toBe(2);
@@ -544,7 +553,12 @@ describe("game to parent", () => {
     const context = await harness.startGame().context;
 
     context.endGame();
-    context.requestNextRound({ rounds: 7, hard: true, maps: ["a", "b"], name: "x" });
+    context.requestNextRound({
+      rounds: 7,
+      hard: true,
+      maps: ["a", "b"],
+      name: "x",
+    });
 
     await vi.waitFor(() => expect(harness.events.nextRound).toHaveLength(1));
     expect(harness.events.endGame).toBe(1);
@@ -560,7 +574,10 @@ describe("game to parent", () => {
     const harness = createHarness();
     active = harness.parentframe;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    harness.transport.connection.resolve({ self: player("c1"), server: player("s1") });
+    harness.transport.connection.resolve({
+      self: player("c1"),
+      server: player("s1"),
+    });
     harness.launch("client");
     const context = await harness.startGame().context;
 
@@ -676,7 +693,10 @@ describe("game to parent", () => {
 
     const limit = 1024 * 1024;
     context.requestNextRound({ a: 1 }, { carryOver: "x".repeat(limit + 1) });
-    context.requestNextRound({ a: 2 }, { carryOver: "é".repeat(limit / 2 + 1) });
+    context.requestNextRound(
+      { a: 2 },
+      { carryOver: "é".repeat(limit / 2 + 1) },
+    );
     context.requestNextRound({ a: 3 }, { carryOver: "x".repeat(limit) });
 
     await vi.waitFor(() => expect(harness.events.nextRound).toHaveLength(1));
@@ -693,7 +713,10 @@ describe("game to parent", () => {
     expect((await host.startGame().context).carryOver).toBe("from last round");
 
     const client = createHarness();
-    client.transport.connection.resolve({ self: player("c1"), server: player("s1") });
+    client.transport.connection.resolve({
+      self: player("c1"),
+      server: player("s1"),
+    });
     client.launch("client", undefined, undefined, undefined, "from last round");
     const clientContext = await client.startGame().context;
     expect(clientContext.carryOver).toBeUndefined();
