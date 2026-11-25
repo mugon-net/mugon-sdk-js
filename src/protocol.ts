@@ -20,12 +20,27 @@ export const MAX_CARRY_OVER_BYTES = 1024 * 1024;
 // The part a player takes in the game's network.
 export type NetworkRole = "server" | "client";
 
+// The character a player picked on the platform. `code` is a mugon-characters
+// code (what `mugon-characters-bevy` renders from); the URLs serve the baked
+// glTF (glb) and mugshot (webp) for games that don't use that library. They are
+// a snapshot taken when the player connected, and the default character's until
+// the player's own bake is done.
+export interface PlayerCharacter {
+  code: string;
+  modelUrl: string;
+  mugshotUrl: string;
+}
+
 // A participant in the game. The name is the player's display name, supplied
 // by the platform; it is not unique, so games identify players by `id`.
 export interface Player {
   id: string;
   name: string;
+  character?: PlayerCharacter;
 }
+
+// The longest character code a game may ask the platform to save.
+export const MAX_CHARACTER_CODE_LENGTH = 1024;
 
 // A setting value as the game receives it, carrying the type the setting was
 // declared with.
@@ -53,6 +68,9 @@ export type ToGameframeInitMessage = {
   initialPlayers: Player[];
   // What the previous round's host game handed over; only ever set for the host.
   carryOver?: string;
+  // Only set when the platform runs this game as the character editor of the
+  // profile page: the player's current character code.
+  characterEditor?: { code: string };
 };
 export type ToGameframeRejectMessage = { type: "reject"; reason: string };
 export type ToGameframeWindowMessage =
@@ -90,6 +108,19 @@ export type FromGameframeNextRoundMessage = {
   settings: Record<string, SettingValue>;
   carryOver?: string;
 };
+// Tells the host page the code the player's character has right now. Only
+// honoured when the platform runs the game as the character editor; the page
+// keeps the latest one and decides when to save it.
+export type FromGameframeCharacterEditedMessage = {
+  type: "character-edited";
+  code: string;
+};
+// Tells the host page the character editor could not switch to the code it
+// was asked to load (see ToGameframeLoadCharacterMessage).
+export type FromGameframeCharacterLoadFailedMessage = {
+  type: "character-load-failed";
+  reason: string;
+};
 export type FromGameframeMessage =
   | FromGameframeSendMessage
   | FromGameframeDisconnectPlayerMessage
@@ -97,7 +128,9 @@ export type FromGameframeMessage =
   | FromGameframeProgressMessage
   | FromGameframeProgressDoneMessage
   | FromGameframeEndGameMessage
-  | FromGameframeNextRoundMessage;
+  | FromGameframeNextRoundMessage
+  | FromGameframeCharacterEditedMessage
+  | FromGameframeCharacterLoadFailedMessage;
 
 // --- parentframe -> gameframe, via the control port ---
 
@@ -115,10 +148,18 @@ export type ToGameframeDataMessage = {
   channel: Channel;
   data: Uint8Array;
 };
+// Asks the character editor to switch to this character, a code the player
+// pasted into the host page. The editor answers with `character-edited` when
+// it switched and `character-load-failed` when it could not.
+export type ToGameframeLoadCharacterMessage = {
+  type: "load-character";
+  code: string;
+};
 export type ToGameframeMessage =
   | ToGameframePlayerConnectedMessage
   | ToGameframePlayerDisconnectedMessage
-  | ToGameframeDataMessage;
+  | ToGameframeDataMessage
+  | ToGameframeLoadCharacterMessage;
 
 // --- fetch port (transferred with `fetch-port`), gameframe -> parentframe ---
 

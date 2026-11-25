@@ -106,6 +106,8 @@ function createHarness(
     endGame: 0,
     nextRound: [] as Record<string, unknown>[],
     nextRoundCarryOver: [] as (string | undefined)[],
+    editedCharacters: [] as string[],
+    loadFailures: [] as string[],
   };
   const parentframe = new Parentframe({
     transport,
@@ -115,6 +117,8 @@ function createHarness(
     onProgress: (progress) => events.progress.push(progress),
     onShowInviteRequest: () => events.showInvite++,
     onEndGameRequest: () => events.endGame++,
+    onCharacterEdited: (code) => events.editedCharacters.push(code),
+    onCharacterLoadFailed: (reason) => events.loadFailures.push(reason),
     onNextRoundRequest: (settings, carryOver) => {
       events.nextRound.push(settings);
       events.nextRoundCarryOver.push(carryOver);
@@ -128,6 +132,7 @@ function createHarness(
     settings?: Record<string, string>,
     totalBytes?: number,
     carryOver?: string,
+    characterEditor?: { code: string },
   ) {
     return parentframe.launch({
       src: "about:blank",
@@ -136,6 +141,7 @@ function createHarness(
       settings,
       totalBytes,
       carryOver,
+      characterEditor,
       iframeFactory: () => ({ contentWindow: childWindow }),
     });
   }
@@ -640,6 +646,63 @@ describe("game to parent", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(requests).toEqual(["invite"]);
+  });
+
+  it("lets only the character editor read and report a character", async () => {
+    const harness = createHarness();
+    active = harness.parentframe;
+    harness.transport.connection.resolve(serverIdentity);
+    harness.launch("server", undefined, undefined, undefined, undefined, {
+      code: "MCabc",
+    });
+    const context = await harness.startGame().context;
+
+    expect(context.characterEditor?.code).toBe("MCabc");
+    context.characterEditor?.edited("MCdef");
+    context.characterEditor?.edited("");
+    context.characterEditor?.edited("M".repeat(2000));
+
+    await vi.waitFor(() =>
+      expect(harness.events.editedCharacters).toHaveLength(1),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(harness.events.editedCharacters).toEqual(["MCdef"]);
+  });
+
+  it("passes a pasted code to the character editor and takes its failure back", async () => {
+    const harness = createHarness();
+    active = harness.parentframe;
+    harness.transport.connection.resolve(serverIdentity);
+    harness.launch("server", undefined, undefined, undefined, undefined, {
+      code: "MCabc",
+    });
+    const context = await harness.startGame().context;
+    const received: string[] = [];
+    context.characterEditor?.onLoad((code) => received.push(code));
+
+    expect(harness.parentframe.loadCharacter("MCnew")).toBe(true);
+    expect(harness.parentframe.loadCharacter("")).toBe(false);
+    await vi.waitFor(() => expect(received).toEqual(["MCnew"]));
+
+    context.characterEditor?.loadFailed("checksum mismatch");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(harness.events.loadFailures).toEqual(["checksum mismatch"]);
+  });
+
+  it("gives an ordinary game no character editor and drops its character reports", async () => {
+    const harness = createHarness();
+    active = harness.parentframe;
+    harness.transport.connection.resolve(serverIdentity);
+    harness.launch();
+    const context = await harness.startGame().context;
+
+    expect(context.characterEditor).toBeUndefined();
+    harness.childWindow.postMessage(
+      { type: "character-edited", code: "MCabc" },
+      "*",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(harness.events.editedCharacters).toEqual([]);
   });
 
   it("drops malformed and oversized next-round settings", async () => {

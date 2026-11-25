@@ -41,6 +41,21 @@ export interface MugonContext {
   // What the previous round handed over through `requestNextRound`. Only the
   // host receives it, and only in the round right after; otherwise undefined.
   readonly carryOver: string | undefined;
+  // Only present when the platform runs the game as the player's character
+  // editor: the code the player started with, and a way to report the code the
+  // character has now (call it on every change; the platform saves the latest
+  // one when the player confirms).
+  readonly characterEditor:
+    | {
+        readonly code: string;
+        edited(code: string): void;
+        // The host page asks the editor to switch to a code the player pasted
+        // there. Requests that arrive before a handler exists are queued.
+        onLoad(handler: (code: string) => void): () => void;
+        // Answer a load request the editor could not apply.
+        loadFailed(reason: string): void;
+      }
+    | undefined;
   // Typed reads; each returns undefined when the setting is absent or declared
   // with another type. A single-choice select reads as a one-element list.
   getString(key: string): string | undefined;
@@ -122,6 +137,9 @@ export function createGameframeRuntime(env: GameframeEnv) {
     message: [],
   };
 
+  const loadCharacterHandlers = new Set<(code: string) => void>();
+  const queuedCharacterLoads: string[] = [];
+
   function emit<Event extends keyof MugonEvents>(
     event: Event,
     payload: Parameters<MugonEvents[Event]>[0],
@@ -145,6 +163,14 @@ export function createGameframeRuntime(env: GameframeEnv) {
   function handleControlMessage(event: MessageEvent) {
     const message = event.data as ToGameframeMessage | undefined;
     switch (message?.type) {
+      case "load-character":
+        if (typeof message.code !== "string") break;
+        if (loadCharacterHandlers.size === 0) {
+          queuedCharacterLoads.push(message.code);
+        } else {
+          for (const handler of loadCharacterHandlers) handler(message.code);
+        }
+        break;
       case "player-connected":
         emit("playerConnected", message.player);
         break;
@@ -169,6 +195,24 @@ export function createGameframeRuntime(env: GameframeEnv) {
       server: Object.freeze({ ...init.server }),
       settings,
       carryOver: init.carryOver,
+      characterEditor: init.characterEditor
+        ? Object.freeze({
+            code: init.characterEditor.code,
+            edited(code: string) {
+              sendToParent({ type: "character-edited", code });
+            },
+            onLoad(handler: (code: string) => void) {
+              loadCharacterHandlers.add(handler);
+              for (const code of queuedCharacterLoads.splice(0)) handler(code);
+              return () => {
+                loadCharacterHandlers.delete(handler);
+              };
+            },
+            loadFailed(reason: string) {
+              sendToParent({ type: "character-load-failed", reason });
+            },
+          })
+        : undefined,
       getString: (key) => {
         const value = settings[key];
         if (value === undefined) return undefined;

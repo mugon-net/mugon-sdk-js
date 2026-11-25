@@ -4,6 +4,7 @@ import {
   FromGameframeWindowMessage,
   NetworkRole,
   MAX_CARRY_OVER_BYTES,
+  MAX_CHARACTER_CODE_LENGTH,
   Player,
   ToGameframeDataMessage,
   ToGameframeInitMessage,
@@ -22,7 +23,7 @@ export type {
 } from "./version-file-fetcher";
 export type { FetchVersionFile, VersionFileRequest } from "./fetch-proxy";
 
-export type { NetworkRole, Player } from "./protocol";
+export type { NetworkRole, Player, PlayerCharacter } from "./protocol";
 export { major as sdkMajor } from "./version";
 
 // The identity a transport assigns this player once connected.
@@ -142,6 +143,13 @@ export interface ParentframeOptions {
     settings: Record<string, SettingValue>,
     carryOver?: string,
   ) => void;
+  // Called when a game running as the character editor (see
+  // `LaunchOptions.characterEditor`) reports the code its character has now.
+  // The code is checked for shape only; the platform validates it when saving.
+  onCharacterEdited?: (code: string) => void;
+  // Called when the character editor could not switch to a code passed to
+  // `loadCharacter`.
+  onCharacterLoadFailed?: (reason: string) => void;
   // How long to wait for the game's `hello` before giving up.
   handshakeTimeoutMs?: number;
   // Where the window `message` events arrive; defaults to `window`.
@@ -154,6 +162,9 @@ export type LaunchOptions = {
   settings?: Record<string, SettingValue>;
   // What the previous round handed over; given to the game as `ctx.carryOver`.
   carryOver?: string;
+  // Runs the game as the platform's character editor: it receives the player's
+  // current character code and may ask to save a new one.
+  characterEditor?: { code: string };
   // Size of all the game's files; enables the byte-based progress estimate.
   totalBytes?: number;
   // The SDK major the game version is recorded with; defaults to this
@@ -427,7 +438,7 @@ export class Parentframe {
 
   private maybeInit() {
     if (!this.helloReceived || !this.identity || this.initialized) return;
-    const { role, settings, carryOver } = this.launchOptions!;
+    const { role, settings, carryOver, characterEditor } = this.launchOptions!;
     const identity = this.identity;
 
     const channel = new MessageChannel();
@@ -445,6 +456,7 @@ export class Parentframe {
       settings: settings ?? {},
       initialPlayers: [...this.players.values()],
       carryOver: role === "server" ? carryOver : undefined,
+      characterEditor,
     };
     this.postToWindow(init, [channel.port2]);
     this.initialized = true;
@@ -488,6 +500,24 @@ export class Parentframe {
         this.options.onNextRoundRequest?.(settings, carryOver);
         break;
       }
+      case "character-load-failed":
+        if (
+          this.launchOptions?.characterEditor &&
+          typeof message.reason === "string"
+        ) {
+          this.options.onCharacterLoadFailed?.(message.reason.slice(0, 200));
+        }
+        break;
+      case "character-edited":
+        if (
+          this.launchOptions?.characterEditor &&
+          typeof message.code === "string" &&
+          message.code.length > 0 &&
+          message.code.length <= MAX_CHARACTER_CODE_LENGTH
+        ) {
+          this.options.onCharacterEdited?.(message.code);
+        }
+        break;
       case "progress":
         if (
           typeof message.fraction === "number" &&
@@ -537,6 +567,22 @@ export class Parentframe {
       loadedBytes: this.loadedBytes,
       done,
     });
+  }
+
+  // Asks a game running as the character editor to switch to this character
+  // (a code the player pasted into the page). It answers with
+  // `onCharacterEdited` when it did and `onCharacterLoadFailed` when it could not.
+  loadCharacter(code: string) {
+    if (
+      !this.launchOptions?.characterEditor ||
+      !this.initialized ||
+      code.length === 0 ||
+      code.length > MAX_CHARACTER_CODE_LENGTH
+    ) {
+      return false;
+    }
+    this.postToGame({ type: "load-character", code });
+    return true;
   }
 
   private postToWindow(
